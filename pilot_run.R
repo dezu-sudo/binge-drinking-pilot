@@ -36,7 +36,6 @@ if (USE_PARALLEL) {
 }
 
 
-
 # (a) robust resolver & minimal reader
 find_var <- function(df, candidates){
   nms <- tolower(names(df))
