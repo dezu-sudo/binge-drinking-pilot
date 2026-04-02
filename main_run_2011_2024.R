@@ -323,11 +323,17 @@ recode_analysis <- function(d){
         !is.na(imprace_i) & imprace_i %in% c(4L,5L) ~ "NH Asian/NHPI",
         !is.na(imprace_i) & imprace_i %in% c(6L,7L) ~ "NH Other/Multiracial",
         # mrace1 BEFORE race1 — gives detailed categories for 2015-2016
+        # In recode_analysis(), replace the mrace1_i conditions in race6_nat with:
         is.na(imprace_i) & !is.na(mrace1_i) & mrace1_i == 1L ~ "NH White",
         is.na(imprace_i) & !is.na(mrace1_i) & mrace1_i == 2L ~ "NH Black",
         is.na(imprace_i) & !is.na(mrace1_i) & mrace1_i == 3L ~ "NH AI/AN",
         is.na(imprace_i) & !is.na(mrace1_i) & mrace1_i %in% c(4L,5L) ~ "NH Asian/NHPI",
-        is.na(imprace_i) & !is.na(mrace1_i) & mrace1_i %in% c(6L,7L) ~ "NH Other/Multiracial",
+        is.na(imprace_i) & !is.na(mrace1_i) & mrace1_i == 6L ~ "NH Other/Multiracial",
+        is.na(imprace_i) & !is.na(mrace1_i) & mrace1_i == 7L ~ "NH Other/Multiracial",
+        # Code 8 = Hispanic in _RACE — already handled by hisp_i check above
+        # but add explicit handler to prevent fallthrough to NA
+        is.na(imprace_i) & !is.na(mrace1_i) & mrace1_i == 8L ~ "Hispanic",
+        # Code 9 = DK/Refused → NA (no handler needed, falls to TRUE ~ NA)
         # race1/racegr3 last resort
         !is.na(race1_i) & race1_i == 1L ~ "NH White",
         !is.na(race1_i) & race1_i == 2L ~ "NH Black",
@@ -399,7 +405,7 @@ read_year_min <- function(yr, path){
   nm_rfbing <- find_var(df, c("_rfbing6","rfbing6","_rfbing5","rfbing5","_rfbing4","rfbing4"))
   
   nm_maxd   <- find_var(df, c("maxdrnks","_maxdrnks"))
-  nm_aved   <- find_var(df, c("avedrnk3","averdrnk3","avedrnk2","_avedrnk"))
+  nm_aved   <- find_var(df, c("avedrnk3","averdrnk3","avedrnk2","_avedrnk", "AVEDRNK4"))
 
   # demographics
   nm_sex    <- find_var(df, c("sex","sex1","sexvar","rcsgendr"))
@@ -411,7 +417,12 @@ read_year_min <- function(yr, path){
   # race/ethnicity sources
   nm_impr   <- find_var(df, c("_imprace","imprace"))
   nm_race1  <- find_var(df, c("_race1","race1","_racegr3","racegr3","_racegr2","racegr2"))
-  nm_mrace1 <- find_var(df, c("_mrace1","mrace1"))  
+  
+  nm_mrace1 <- find_var(df, c("_mrace1","mrace1"))
+  if (yr %in% c(2015L, 2016L)) {
+    nm_mrace1 <- find_var(df, c("race","_race","x_race"))
+  }
+  
   nm_mrace2 <- find_var(df, c("_mrace2","mrace2"))  
   nm_hisp   <- find_var(df, c("hispanc","hispanic","hispan2","hispan1","_hispanc","hispanc2"))
   
@@ -421,7 +432,7 @@ read_year_min <- function(yr, path){
   nm_incomg  <- find_var(df, c("_incomg","incomg"))
   nm_employ1 <- find_var(df, c("employ1","_employ1","employ"))
   nm_marital <- find_var(df, c("marital","_marital"))
-  nm_hlthpln <- find_var(df, c("hlthpln1","_hlthpln1","hlthpln2"))
+  nm_hlthpln <- find_var(df, c("hlthpln1","_hlthpln1","hlthpln2", "_HLTHPLN", "_HLTHPL2", "hlthpln", "_hlthpln", "_HLTHPL1"))
   
 
   # required inputs to proceed
@@ -479,7 +490,7 @@ read_year_min <- function(yr, path){
 # ===== CACHE VERSIONING =====
 # Put this near the top (after PROJ_DIR). Bump CACHE_VER anytime recode logic changes.
 
-CACHE_VER <- "v2026-01-16_popTrend_racefix2.1"
+CACHE_VER <- "v2026-01-16_popTrend_racefix2.5_race2015fix"
 
 read_year_cached <- function(yr, xpt_path){
   cache_dir <- file.path(PROJ_DIR, "data/cache")
@@ -545,14 +556,15 @@ audit_find <- function(df){
     binge   = find_var(df, c("drnk3ge5","_drnk3ge5")),
     rfbing  = find_var(df, c("_rfbing6","rfbing6","_rfbing5","rfbing5","_rfbing4","rfbing4")),
     maxd    = find_var(df, c("maxdrnks","_maxdrnks")),
-    aved    = find_var(df, c("avedrnk3","averdrnk3","avedrnk2","_avedrnk")),
+    aved    = find_var(df, c("avedrnk3","averdrnk3","avedrnk2","_avedrnk", "AVEDRNK4")),
     sex     = find_var(df, c("sex","sex1","sexvar","rcsgendr")),
     age5    = find_var(df, c("_ageg5yr","ageg5yr","x_ageg5yr")),
     educag  = find_var(df, c("educag","_educag","x_educag")),
     educa   = find_var(df, c("educa")),
     state   = find_var(df, c("state", "x_state")),
     imprace = find_var(df, c("_imprace","imprace")),
-    race1   = find_var(df, c("_race1","race1","_racegr3","racegr3","_racegr2","racegr2")),
+    race1 = find_var(df, c("_race1","race1","_racegr3","racegr3",
+                           "_racegr2","racegr2","_race","x_race","race")),
     mrace2  = find_var(df, c("_mrace2","mrace2")),
     hisp    = find_var(df, c("hispanc","hispanic","hispan2","hispan1","_hispanc")),
     income2 = find_var(df, c("income2")),
@@ -561,7 +573,7 @@ audit_find <- function(df){
     employ1 = find_var(df, c("employ1","_employ1","employ")),
     marital = find_var(df, c("marital","_marital")),
     
-    hlthpln = find_var(df, c("hlthpln1","_hlthpln1","hlthpln2"))
+    hlthpln = find_var(df, c("hlthpln1","_hlthpln1","hlthpln2", "_HLTHPLN", "_HLTHPL2", "hlthpln", "_hlthpln", "_HLTHPL1"))
   )
 }
 aud <- purrr::map2_dfr(
@@ -620,7 +632,7 @@ if (nrow(bad) > 0) {
 }
 # === END QC ===
 
-vars_needed <- c("wt","psu","strata","year","state","age7","any_binge_cdc",
+vars_needed <- c("wt","psu","strata","year","state","age_group","any_binge_cdc",
                  "sex_f","race6_nat","educ4","income6","employ3","marital3","insured")
 
 
@@ -815,7 +827,6 @@ df_all <- df_all %>%
 
 
 # ===== A) Build pooled survey design (2011–2024) =====
-# (Put this right after your qc_rows_by_year.csv write)
 
 # Ensure year-specific strata/PSU so pooling is valid
 df_all <- df_all %>%
@@ -911,6 +922,49 @@ des_all <- stats::update(
 des_curr <- subset(des_all, is_current)
 
 
+# Force all categorical covariates to unordered (treatment/dummy coding)
+# This gives interpretable PRs per level vs reference in all models
+unorder_covs <- function(design) {
+  stats::update(design,
+                age_group  = factor(age_group,
+                                    levels = c("18-24","25-29","30-34","35-39","40-44",
+                                               "45-49","50-54","55-59","60-64","65+"),
+                                    ordered = FALSE),
+                educ4      = factor(educ4,
+                                    levels = c("<HS","HS/GED","Some college/AA","College"),
+                                    ordered = FALSE),
+                income6    = factor(income6,
+                                    levels = c("<$15k","$15\u2013<25k","$25\u2013<35k",
+                                               "$35\u2013<50k","$50\u2013<75k",
+                                               "\u2265$75k","Unknown"),
+                                    ordered = FALSE),
+                income3    = factor(income3,
+                                    levels = c("<$25k","$25\u2013<50k",
+                                               "\u2265$50k","Unknown"),
+                                    ordered = FALSE),
+                income_hi4 = factor(income_hi4,
+                                    levels = c("<$100k","$100\u2013<150k",
+                                               "$150\u2013<200k",
+                                               "\u2265$200k","Unknown"),
+                                    ordered = FALSE),
+                marital2   = factor(marital2,
+                                    levels = c("Married/Partnered","Not married","Unknown"),
+                                    ordered = FALSE),
+                marital3   = factor(marital3,
+                                    levels = c("Married/Partnered","Never married",
+                                               "Previously married","Unknown"),
+                                    ordered = FALSE),
+                insured    = factor(insured,
+                                    levels = c("Yes","No","Unknown"),
+                                    ordered = FALSE)
+  )
+}
+
+des_all  <- unorder_covs(des_all)
+des_curr <- subset(des_all, is_current)
+
+
+
 # ==== 7-band Age Standardization (Year 2000, adults 18+) ====
 
 # 2000 standard population counts in 5-year bins (millions scaled to counts) — from NCHS Stat Note 20
@@ -1001,7 +1055,7 @@ prev_all_prop_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
   message("Processing year: ", yr)
   
   df_yr <- des_all$variables %>%
-    dplyr::filter(year == yr, !is.na(age7))
+    dplyr::filter(year == yr, !is.na(age_group))
   
   des_yr <- survey::svydesign(
     id = ~psu_id,
@@ -1013,8 +1067,8 @@ prev_all_prop_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
   
   des_std <- survey::svystandardize(
     des_yr,
-    by = ~age7,
-    population = w_2000_age7_counts
+    by = ~age_group,
+    population = std2000_adult10
   )
   
   out <- survey::svymean(
@@ -1057,7 +1111,7 @@ prev_curr_prop_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
   message("Processing year: ", yr)
   
   df_yr <- des_curr$variables %>%
-    dplyr::filter(year == yr, !is.na(age7))
+    dplyr::filter(year == yr, !is.na(age_group))
   
   des_yr <- survey::svydesign(
     id = ~psu_id,
@@ -1069,8 +1123,8 @@ prev_curr_prop_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
   
   des_std <- survey::svystandardize(
     des_yr,
-    by = ~age7,
-    population = w_2000_age7_counts
+    by = ~age_group,
+    population = std2000_adult10
   )
   
   out <- survey::svymean(
@@ -1113,11 +1167,11 @@ readr::write_csv(
 prev_race_all_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
   message("Processing year: ", yr)
   df_yr <- des_all$variables %>%
-    dplyr::filter(year == yr, !is.na(age7), !is.na(race6_nat))
+    dplyr::filter(year == yr, !is.na(age_group), !is.na(race6_nat))
   des_yr <- survey::svydesign(id = ~psu_id, strata = ~strata_id,
                               weights = ~wt, data = df_yr, nest = TRUE)
-  des_std <- survey::svystandardize(des_yr, by = ~age7, over = ~race6_nat,
-                                    population = w_2000_age7_counts)
+  des_std <- survey::svystandardize(des_yr, by = ~age_group, over = ~race6_nat,
+                                    population = std2000_adult10)
   out <- survey::svyby(~any_binge_cdc, ~race6_nat, des_std, survey::svymean,
                        na.rm = TRUE, vartype = "ci") %>%
     tibble::as_tibble() %>%
@@ -1139,13 +1193,13 @@ prev_race_curr_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
   message("Processing year: ", yr)
   
   df_yr <- des_curr$variables %>%
-    dplyr::filter(year == yr, !is.na(age7), !is.na(race6_nat))
+    dplyr::filter(year == yr, !is.na(age_group), !is.na(race6_nat))
   
   des_yr <- survey::svydesign(id = ~psu_id, strata = ~strata_id,
                               weights = ~wt, data = df_yr, nest = TRUE)
   
-  des_std <- survey::svystandardize(des_yr, by = ~age7, over = ~race6_nat,
-                                    population = w_2000_age7_counts)
+  des_std <- survey::svystandardize(des_yr, by = ~age_group, over = ~race6_nat,
+                                    population = std2000_adult10)
   
   out <- survey::svyby(~any_binge_cdc, ~race6_nat, des_std, survey::svymean,
                        na.rm = TRUE, vartype = "ci") %>%
@@ -1214,15 +1268,13 @@ prev_race_curr_ageadj %>%
 
 ######################################################################################
 
-
-
 # (5) States — All adults (AGE-ADJUSTED, 7-band), looped by year
 
 state_prev_all_prop_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
   message("Processing year: ", yr)
   
   df_yr <- des_all$variables %>%
-    dplyr::filter(year == yr, !is.na(age7), !is.na(state))
+    dplyr::filter(year == yr, !is.na(age_group), !is.na(state))
   
   des_yr <- survey::svydesign(
     id = ~psu_id,
@@ -1234,9 +1286,9 @@ state_prev_all_prop_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
   
   des_std <- survey::svystandardize(
     des_yr,
-    by = ~age7,
+    by = ~age_group,
     over = ~state,
-    population = w_2000_age7_counts
+    population = std2000_adult10
   )
   
   out <- survey::svyby(
@@ -1305,7 +1357,7 @@ state_prev_curr_prop_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
   message("Processing year: ", yr)
   
   df_yr <- des_curr$variables %>%
-    dplyr::filter(year == yr, !is.na(age7), !is.na(state))
+    dplyr::filter(year == yr, !is.na(age_group), !is.na(state))
   
   des_yr <- survey::svydesign(
     id = ~psu_id,
@@ -1317,9 +1369,9 @@ state_prev_curr_prop_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
   
   des_std <- survey::svystandardize(
     des_yr,
-    by = ~age7,
+    by = ~age_group,
     over = ~state,
-    population = w_2000_age7_counts
+    population = std2000_adult10
   )
   
   out <- survey::svyby(
@@ -1406,7 +1458,7 @@ qc_prev_preflight <- function(des_obj,
   
   # 1) Core variable existence
   needed <- c("year", "wt", "psu_id", "strata_id", "any_binge_cdc", subgroup_chr)
-  if (age_adjust) needed <- c(needed, "age7")
+  if (age_adjust) needed <- c(needed, "age_group")
   
   missing_vars <- setdiff(needed, names(df))
   if (length(missing_vars) > 0) {
@@ -1426,22 +1478,22 @@ qc_prev_preflight <- function(des_obj,
     bad_psu = sum(is.na(df$psu_id)),
     bad_strata = sum(is.na(df$strata_id)),
     missing_subgroup = sum(is.na(df[[subgroup_chr]])),
-    missing_age7 = if (age_adjust) sum(is.na(df$age7)) else NA_integer_
+    missing_age_group = if (age_adjust) sum(is.na(df$age_group)) else NA_integer_
   )
   
   print(core_tab)
   
-  # 3) Age7 level check when needed
+  # 3) age_group level check when needed
   if (age_adjust) {
-    age7_levels <- levels(df$age7)
-    cat("\nAge7 levels in data:\n")
-    print(age7_levels)
+    age_group_levels <- levels(df$age_group)
+    cat("\nage_group levels in data:\n")
+    print(age_group_levels)
     
-    cat("\nAge7 levels missing from standard:\n")
-    print(setdiff(age7_levels, std_levels))
+    cat("\nage_group levels missing from standard:\n")
+    print(setdiff(age_group_levels, std_levels))
     
     cat("\nStandard levels missing from data:\n")
-    print(setdiff(std_levels, age7_levels))
+    print(setdiff(std_levels, age_group_levels))
   }
   
   # 4) Year-by-subgroup raw cell coverage
@@ -1480,15 +1532,15 @@ qc_prev_preflight <- function(des_obj,
   print(missing_cells, n = Inf)
   
   # 6) Age-adjustment-specific coverage:
-  # within each subgroup-year, do we have at least some nonmissing age7?
+  # within each subgroup-year, do we have at least some nonmissing age_group?
   if (age_adjust) {
     age_cover <- df %>%
       dplyr::filter(!is.na(.data[[subgroup_chr]])) %>%
       dplyr::group_by(year, !!subgroup_sym) %>%
       dplyr::summarise(
         n_unwtd = dplyr::n(),
-        n_age7_nonmiss = sum(!is.na(age7)),
-        n_age7_levels_present = dplyr::n_distinct(age7[!is.na(age7)]),
+        n_age_group_nonmiss = sum(!is.na(age_group)),
+        n_age_group_levels_present = dplyr::n_distinct(age_group[!is.na(age_group)]),
         .groups = "drop"
       ) %>%
       dplyr::arrange(year, !!subgroup_sym)
@@ -1497,9 +1549,9 @@ qc_prev_preflight <- function(des_obj,
     print(utils::head(age_cover, 20))
     
     problem_age_cells <- age_cover %>%
-      dplyr::filter(n_age7_nonmiss == 0)
+      dplyr::filter(n_age_group_nonmiss == 0)
     
-    cat("\nSubgroup-year cells with ZERO usable age7 rows:\n")
+    cat("\nSubgroup-year cells with ZERO usable age_group rows:\n")
     print(problem_age_cells, n = Inf)
   }
   
@@ -1529,7 +1581,7 @@ prev_sex_all_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
   message("Processing year: ", yr)
   
   df_yr <- des_all$variables %>%
-    dplyr::filter(year == yr, !is.na(age7), !is.na(sex_f))
+    dplyr::filter(year == yr, !is.na(age_group), !is.na(sex_f))
   
   des_yr <- survey::svydesign(
     id = ~psu_id,
@@ -1541,9 +1593,9 @@ prev_sex_all_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
   
   des_std <- survey::svystandardize(
     des_yr,
-    by = ~age7,
+    by = ~age_group,
     over = ~sex_f,
-    population = w_2000_age7_counts
+    population = std2000_adult10
   )
   
   out <- survey::svyby(
@@ -1594,7 +1646,7 @@ prev_sex_curr_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
   message("Processing year: ", yr)
   
   df_yr <- des_curr$variables %>%
-    dplyr::filter(year == yr, !is.na(age7), !is.na(sex_f))
+    dplyr::filter(year == yr, !is.na(age_group), !is.na(sex_f))
   
   des_yr <- survey::svydesign(
     id = ~psu_id,
@@ -1606,9 +1658,9 @@ prev_sex_curr_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
   
   des_std <- survey::svystandardize(
     des_yr,
-    by = ~age7,
+    by = ~age_group,
     over = ~sex_f,
-    population = w_2000_age7_counts
+    population = std2000_adult10
   )
   
   out <- survey::svyby(
@@ -1772,7 +1824,7 @@ prev_educ_all_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
   message("Processing year: ", yr)
   
   df_yr <- des_all$variables %>%
-    dplyr::filter(year == yr, !is.na(age7), !is.na(educ4))
+    dplyr::filter(year == yr, !is.na(age_group), !is.na(educ4))
   
   des_yr <- survey::svydesign(
     id = ~psu_id,
@@ -1784,9 +1836,9 @@ prev_educ_all_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
   
   des_std <- survey::svystandardize(
     des_yr,
-    by = ~age7,
+    by = ~age_group,
     over = ~educ4,
-    population = w_2000_age7_counts
+    population = std2000_adult10
   )
   
   out <- survey::svyby(
@@ -1836,7 +1888,7 @@ prev_educ_curr_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
   message("Processing year: ", yr)
   
   df_yr <- des_curr$variables %>%
-    dplyr::filter(year == yr, !is.na(age7), !is.na(educ4))
+    dplyr::filter(year == yr, !is.na(age_group), !is.na(educ4))
   
   des_yr <- survey::svydesign(
     id = ~psu_id,
@@ -1848,9 +1900,9 @@ prev_educ_curr_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
   
   des_std <- survey::svystandardize(
     des_yr,
-    by = ~age7,
+    by = ~age_group,
     over = ~educ4,
-    population = w_2000_age7_counts
+    population = std2000_adult10
   )
   
   out <- survey::svyby(
@@ -2221,136 +2273,234 @@ state_to_region <- function(fips){
 des_all <- stats::update(
   des_all,
   region = factor(state_to_region(state),
-                  levels = c("Northeast","Midwest","South","West"))
+                  levels = c("Northeast","Midwest","South","West")),
+  covid  = as.integer(year >= 2020)   # ADD THIS
 )
 des_curr <- subset(des_all, is_current)
 
 
-# ---- Primary adjusted PR model (current drinkers) ----
-fit_pr_curr_lin <- survey::svyglm(
-  any_binge_cdc ~ year_lin + sex_f + age7 + race6_nat + 
-    educ4 + income6 + employ3 + marital3 + insured + factor(region),
-  design = des_curr,
-  family = quasipoisson(link = "log")
-)
-
-# ---- COVID sensitivity ----
-des_curr <- stats::update(des_curr, 
-                          covid = as.integer(year >= 2020))
-des_all  <- stats::update(des_all,  
-                          covid = as.integer(year >= 2020))
-
-fit_pr_curr_covid <- survey::svyglm(
-  any_binge_cdc ~ year_lin + covid + sex_f + age7 + race6_nat +
-    educ4 + income6 + employ3 + marital3 + insured + factor(region),
-  design = des_curr,
-  family = quasipoisson(link = "log")
-)
-
-fit_pr_all_lin <- survey::svyglm(
-  any_binge_cdc ~ year_lin + sex_f + age7 + race6_nat +
-    educ4 + income6 + employ3 + marital3 + insured + factor(region),
-  design = des_all,
-  family = quasipoisson(link = "log")
-)
-
-fit_pr_all_covid <- survey::svyglm(
-  any_binge_cdc ~ year_lin + covid + sex_f + age7 + race6_nat +
-    educ4 + income6 + employ3 + marital3 + insured + factor(region),
-  design = des_all,
-  family = quasipoisson(link = "log")
-)
-
-# Export PR tables
-mk_pr_table <- function(fit){
-  co <- stats::coef(fit); ci <- stats::confint(fit); sm <- summary(fit)$coefficients
+safe_extract <- function(fit) {
+  co <- stats::coef(fit)
+  vc <- stats::vcov(fit)      
+  se <- sqrt(diag(vc))
   tibble::tibble(
     term = names(co),
     PR   = exp(co),
-    LCL  = exp(ci[,1]),
-    UCL  = exp(ci[,2]),
-    p    = sm[,4]
+    LCL  = exp(co - 1.96 * se),
+    UCL  = exp(co + 1.96 * se),
+    p    = 2 * (1 - pnorm(abs(co / se)))
   )
 }
 
-pr_curr       <- mk_pr_table(fit_pr_curr_lin)
-pr_curr_covid <- mk_pr_table(fit_pr_curr_covid)
-pr_all        <- mk_pr_table(fit_pr_all_lin)
-pr_all_covid  <- mk_pr_table(fit_pr_all_covid)
 
-readr::write_csv(pr_curr,       file.path(tab_dir, "adj_PR_currentdrinkers_linetime_regionFE.csv"))
-readr::write_csv(pr_curr_covid, file.path(tab_dir, "adj_PR_currentdrinkers_linetime_covidSens_regionFE.csv"))
-readr::write_csv(pr_all,        file.path(tab_dir, "adj_PR_alladults_linetime_regionFE.csv"))
-readr::write_csv(pr_all_covid,  file.path(tab_dir, "adj_PR_alladults_linetime_covidSens_regionFE.csv"))
-
-# --------------------------------------------------------------
-
-
-
-
-# ---- Optional trend sensitivity (not run by default) ----
-
-
-RUN_TREND_SENS <- FALSE  # set TRUE when you want to run/export the alt time forms
-
-if (RUN_TREND_SENS) {
-  fit_pr_curr_time_cat <- survey::svyglm(
-    any_binge_cdc ~ factor(year) + sex_f + age_group + race4 + educ4 + factor(state),
-    design = des_curr, family = quasipoisson(link = "log")
-  )
-  fit_pr_curr_time_ns3 <- survey::svyglm(
-    any_binge_cdc ~ splines::ns(year_lin, df = 3) + sex_f + age_group + race4 + educ4 + factor(state),
-    design = des_curr, family = quasipoisson(link = "log")
+mk_wald_row <- function(wt, label) {
+  tibble::tibble(
+    interaction = label,
+    Fstat       = as.numeric(wt$Ftest),
+    df          = as.numeric(wt$df),
+    ddf         = as.numeric(wt$ddf),
+    p           = as.numeric(wt$p)
   )
 }
-  # Uncomment if you want files:
-  # readr::write_csv(mk_pr_table(fit_pr_curr_time_cat),
-  #   file.path(tab_dir, "adj_PR_currentdrinkers_timeCategorical.csv"))
-  # readr::write_csv(mk_pr_table(fit_pr_curr_time_ns3),
-  #   file.path(tab_dir, "adj_PR_currentdrinkers_timeSpline_df3.csv"))
 
-  # ===== Export time-spec sensitivity models =====
-  #readr::write_csv(mk_pr_table(fit_pr_curr_time_cat),
-    #                 file.path(tab_dir, "adj_PR_currentdrinkers_timeCategorical.csv"))
-  #readr::write_csv(mk_pr_table(fit_pr_curr_time_ns3),
-  #                 file.path(tab_dir, "adj_PR_currentdrinkers_timeSpline_df3.csv"))
+# ===== MODEL DIAGNOSTICS FUNCTION =====
+# Defined once here, used inline per model below
+diag_quasi <- function(fit, label) {
+  rp  <- residuals(fit, type = "pearson")
+  df  <- fit$df.residual
+  phi <- sum(rp^2, na.rm = TRUE) / df
+  tibble::tibble(
+    model       = label,
+    df_resid    = df,
+    phi_pearson = phi,
+    family      = paste0(class(fit$family)[1],
+                         " (", fit$family$family,
+                         ", link=", fit$family$link, ")")
+  )
+}
 
-
-# ---- Race × Time interaction — primary (continuous year, one PR per group) ----
-fit_pr_race_time_lin <- survey::svyglm(
-  any_binge_cdc ~ year_lin * race6_nat + sex_f + age7 +
+# ==== Primary models ====
+#---- Model 1 ----
+fit_pr_curr_lin <- survey::svyglm(
+  any_binge_cdc ~ year_lin + sex_f + age_group + race6_nat +
     educ4 + income6 + employ3 + marital3 + insured + factor(region),
   design = des_curr,
   family = quasipoisson(link = "log")
 )
 
-# Joint Wald test
-wt_race_time <- survey::regTermTest(fit_pr_race_time_lin, ~ year_lin:race6_nat)
-race_time_test <- tibble::tibble(
-  interaction = "Year×Race",
-  chisq = unname(wt_race_time$test),
-  df    = unname(wt_race_time$df),
-  p     = unname(wt_race_time$p)
-)
-readr::write_csv(race_time_test,
-                 file.path(tab_dir, "adj_PR_currentdrinkers_interaction_YearByRace_jointWald.csv"))
+marg_prev_curr <- purrr::map_dfr(2011:2024, function(yr) {
+  nd    <- des_curr$variables %>%
+    dplyr::mutate(year_lin = as.numeric(yr) - 2011)
+  preds <- predict(fit_pr_curr_lin, newdata = nd, type = "response")
+  tibble::tibble(year = yr, marg_prev = mean(as.numeric(preds), na.rm = TRUE))
+})
 
-# Extract race-specific annual PRs
+diag_curr_lin <- diag_quasi(fit_pr_curr_lin, "PR current, linear year")
+
+pr_curr <- safe_extract(fit_pr_curr_lin)
+
+vif_raw <- car::vif(fit_pr_curr_lin)
+if (is.matrix(vif_raw)) {
+  vif_out <- tibble::tibble(
+    term     = rownames(vif_raw),
+    GVIF     = vif_raw[, "GVIF"],
+    df       = vif_raw[, "Df"],
+    GVIF_adj = vif_raw[, "GVIF^(1/(2*Df))"]^2
+  )
+} else {
+  vif_out <- tibble::tibble(term = names(vif_raw), GVIF_adj = as.numeric(vif_raw))
+}
+
+# ---- WRITE OUTPUTS ----
+readr::write_csv(marg_prev_curr,
+                 file.path(tab_dir, "adj_marginal_prev_currentdrinkers_byyear.csv"))
+readr::write_csv(pr_curr,
+                 file.path(tab_dir, "adj_PR_currentdrinkers_linetime_regionFE.csv"))
+readr::write_csv(vif_out,
+                 file.path(tab_dir, "qc_vif_currentdrinkers_primary.csv"))
+
+rm(fit_pr_curr_lin); gc()
+
+# ============================================================
+# ---- Model 2: Current drinkers + COVID ----
+# ============================================================
+fit_pr_curr_covid <- survey::svyglm(
+  any_binge_cdc ~ year_lin + covid + sex_f + age_group + race6_nat +
+    educ4 + income6 + employ3 + marital3 + insured + factor(region),
+  design = des_curr,
+  family = quasipoisson(link = "log")
+)
+
+# Full model intact — extract everything
+diag_curr_covid   <- diag_quasi(fit_pr_curr_covid, "PR current, COVID-adjusted")
+pr_curr_covid     <- safe_extract(fit_pr_curr_covid)
+
+readr::write_csv(pr_curr_covid,
+                 file.path(tab_dir, "adj_PR_currentdrinkers_linetime_covidSens_regionFE.csv"))
+
+rm(fit_pr_curr_covid); gc()
+
+
+# ============================================================
+# ---- Model 3: All adults, linear year ----
+# ============================================================
+fit_pr_all_lin <- survey::svyglm(
+  any_binge_cdc ~ year_lin + sex_f + age_group + race6_nat +
+    educ4 + income6 + employ3 + marital3 + insured + factor(region),
+  design = des_all,
+  family = quasipoisson(link = "log")
+)
+
+# Marginal prevalence — needs full model
+marg_prev_all <- purrr::map_dfr(2011:2024, function(yr) {
+  nd    <- des_all$variables %>%
+    dplyr::mutate(year_lin = as.numeric(yr) - 2011)
+  preds <- predict(fit_pr_all_lin, newdata = nd, type = "response")
+  tibble::tibble(year = yr,
+                 marg_prev = mean(as.numeric(preds), na.rm = TRUE))
+})
+
+# Full model intact — extract everything
+diag_all_lin  <- diag_quasi(fit_pr_all_lin, "PR all adults, linear year")
+pr_all        <- safe_extract(fit_pr_all_lin)
+
+readr::write_csv(marg_prev_all,
+                 file.path(tab_dir, "adj_marginal_prev_alladults_byyear.csv"))
+readr::write_csv(pr_all,
+                 file.path(tab_dir, "adj_PR_alladults_linetime_regionFE.csv"))
+
+rm(fit_pr_all_lin); gc()
+
+
+# ============================================================
+# ---- Model 4: All adults + COVID ----
+# ============================================================
+fit_pr_all_covid <- survey::svyglm(
+  any_binge_cdc ~ year_lin + covid + sex_f + age_group + race6_nat +
+    educ4 + income6 + employ3 + marital3 + insured + factor(region),
+  design = des_all,
+  family = quasipoisson(link = "log")
+)
+
+# Full model intact — extract everything
+diag_all_covid  <- diag_quasi(fit_pr_all_covid, "PR all adults, COVID-adjusted")
+pr_all_covid    <- safe_extract(fit_pr_all_covid)
+
+readr::write_csv(pr_all_covid,
+                 file.path(tab_dir, "adj_PR_alladults_linetime_covidSens_regionFE.csv"))
+
+rm(fit_pr_all_covid); gc()
+message("Primary models done")
+
+# ============================================================
+# ---- Optional trend sensitivity (not run by default) ----
+# ============================================================
+RUN_TREND_SENS <- TRUE
+if (RUN_TREND_SENS) {
+  fit_pr_curr_time_cat <- survey::svyglm(
+    any_binge_cdc ~ factor(year) + sex_f + age_group + race4 +
+      educ4 + factor(state),
+    design = des_curr, family = quasipoisson(link = "log")
+  )
+  fit_pr_curr_time_ns3 <- survey::svyglm(
+    any_binge_cdc ~ splines::ns(year_lin, df = 3) + sex_f + age_group +
+      race4 + educ4 + factor(state),
+    design = des_curr, family = quasipoisson(link = "log")
+  )
+}
+
+  # Uncomment if you want files:
+readr::write_csv(mk_pr_table(fit_pr_curr_time_cat),
+file.path(tab_dir, "adj_PR_currentdrinkers_timeCategorical.csv"))
+readr::write_csv(mk_pr_table(fit_pr_curr_time_ns3),
+file.path(tab_dir, "adj_PR_currentdrinkers_timeSpline_df3.csv"))
+
+#===== Export time-spec sensitivity models =====
+
+readr::write_csv(mk_pr_table(fit_pr_curr_time_cat),
+              file.path(tab_dir, "adj_PR_currentdrinkers_timeCategorical.csv"))
+readr::write_csv(mk_pr_table(fit_pr_curr_time_ns3),
+                file.path(tab_dir, "adj_PR_currentdrinkers_timeSpline_df3.csv"))
+
+
+# ============================================================
+# ---- Race × Time interaction — continuous year ----
+# ============================================================
+fit_pr_race_time_lin <- survey::svyglm(
+  any_binge_cdc ~ year_lin * race6_nat + sex_f + age_group +
+    educ4 + income6 + employ3 + marital3 + insured + factor(region),
+  design = des_curr,
+  family = quasipoisson(link = "log")
+)
+
+# regTermTest — needs full model
+wt_race_time   <- survey::regTermTest(fit_pr_race_time_lin, ~ year_lin:race6_nat)
+
+race_time_test <- mk_wald_row(wt_race_time, "YearxRace")
+
+# diag — needs full model
+diag_race_lin <- diag_quasi(fit_pr_race_time_lin, "PR current, Year×Race (linear)")
+
+# coef/vcov — needs full model
 race_levels <- levels(des_curr$variables$race6_nat)
-co <- stats::coef(fit_pr_race_time_lin)
-vc <- stats::vcov(fit_pr_race_time_lin)
+co_race     <- stats::coef(fit_pr_race_time_lin)
+vc_race     <- stats::vcov(fit_pr_race_time_lin)
+
+rm(fit_pr_race_time_lin); gc()
+
+# Race-specific annual PRs — uses stored coef/vcov, fine after rm
 
 race_annual_pr <- purrr::map_dfr(race_levels, function(r) {
-  if (r == "NH White") {  # reference group
-    b  <- unname(co["year_lin"])
-    se <- sqrt(vc["year_lin", "year_lin"])
+  if (r == "NH White") {
+    b  <- unname(co_race["year_lin"])
+    se <- sqrt(vc_race["year_lin", "year_lin"])
   } else {
     int_term <- paste0("year_lin:race6_nat", r)
-    b  <- unname(co["year_lin"]) + unname(co[int_term])
+    b  <- unname(co_race["year_lin"]) + unname(co_race[int_term])
     se <- sqrt(
-      vc["year_lin","year_lin"] +
-        vc[int_term, int_term] +
-        2 * vc["year_lin", int_term]
+      vc_race["year_lin","year_lin"] +
+        vc_race[int_term, int_term] +
+        2 * vc_race["year_lin", int_term]
     )
   }
   tibble::tibble(
@@ -2361,125 +2511,276 @@ race_annual_pr <- purrr::map_dfr(race_levels, function(r) {
     p           = 2*(1 - pnorm(abs(b/se)))
   )
 })
+
+
+
+readr::write_csv(race_time_test,
+                 file.path(tab_dir, "adj_PR_currentdrinkers_interaction_YearByRace_jointWald.csv"))
 readr::write_csv(race_annual_pr,
                  file.path(tab_dir, "adj_PR_currentdrinkers_TrendByRace_annualPR.csv"))
 
-# ---- Race × Time sensitivity — factor(year), flexible trajectory ----
+
+# ============================================================
+# ---- Race × Time sensitivity — categorical year ----
+# ============================================================
 fit_pr_race_time_cat <- survey::svyglm(
-  any_binge_cdc ~ factor(year) * race6_nat + sex_f + age7 +
+  any_binge_cdc ~ factor(year) * race6_nat + sex_f + age_group +
     educ4 + income6 + employ3 + marital3 + insured + factor(region),
   design = des_curr,
   family = quasipoisson(link = "log")
 )
 
-wt_race_timecat <- survey::regTermTest(fit_pr_race_time_cat, 
-                                       ~ `factor(year)`:race6_nat)
+# Manual Wald F test using stored coef and vcov
+co_cat <- coef(fit_pr_race_time_cat)
+vc_cat <- vcov(fit_pr_race_time_cat)
+
+# Get the interaction terms
+int_terms <- grep("factor\\(year\\)\\d{4}:race6_nat",
+                  names(co_cat), value = TRUE)
+
+# Subset to just those terms
+b   <- co_cat[int_terms]
+V   <- vc_cat[int_terms, int_terms]
+
+# Wald F statistic
+q   <- length(b)
+F_stat <- as.numeric(t(b) %*% solve(V) %*% b) / q
+ddf    <- fit_pr_race_time_cat$df.residual
+p_val  <- pf(F_stat, df1 = q, df2 = ddf, lower.tail = FALSE)
+
 race_timecat_test <- tibble::tibble(
-  interaction = "Year(categorical)×Race",
-  chisq = unname(wt_race_timecat$test),
-  df    = unname(wt_race_timecat$df),
-  p     = unname(wt_race_timecat$p)
+  interaction = "Year(categorical)xRace",
+  Fstat       = F_stat,
+  df          = q,
+  ddf         = ddf,
+  p           = p_val
 )
+
+
+# diag — needs full model
+diag_race_cat <- diag_quasi(fit_pr_race_time_cat,
+                            "PR current, Year×Race (categorical)")
+
+
+
 readr::write_csv(race_timecat_test,
                  file.path(tab_dir, "adj_PR_currentdrinkers_interaction_YearCatByRace_jointWald.csv"))
 
 
-# ---- Secondary outcome: High-intensity binge (PRs), current drinkers ----
+
+# Extract year-race implied trajectories for internal inspection
+co_cat <- coef(fit_pr_race_time_cat)
+vc_cat <- vcov(fit_pr_race_time_cat)
+
+year_race_grid <- tidyr::expand_grid(
+  year     = 2011:2024,
+  race6_nat = levels(des_curr$variables$race6_nat)
+)
+
+year_race_implied <- year_race_grid %>%
+  dplyr::mutate(
+    yr_term   = dplyr::if_else(year == 2011, NA_character_,
+                               paste0("factor(year)", year)),
+    race_term = dplyr::if_else(race6_nat == "NH White", NA_character_,
+                               paste0("race6_nat", race6_nat)),
+    int_term  = dplyr::if_else(year == 2011 | race6_nat == "NH White",
+                               NA_character_,
+                               paste0("factor(year)", year, ":race6_nat", race6_nat)),
+    log_RR = purrr::pmap_dbl(
+      list(yr_term, race_term, int_term),
+      function(y, r, i) {
+        b <- 0
+        if (!is.na(y) && y %in% names(co_cat)) b <- b + co_cat[y]
+        if (!is.na(r) && r %in% names(co_cat)) b <- b + co_cat[r]
+        if (!is.na(i) && i %in% names(co_cat)) b <- b + co_cat[i]
+        b
+      }
+    ),
+    RR = exp(log_RR)
+  ) %>%
+  dplyr::select(year, race6_nat, RR)
+
+readr::write_csv(year_race_implied,
+                 file.path(tab_dir, "internal_year_race_implied_RR_categorical.csv"))
+
+rm(co_cat, vc_cat, int_terms, b, V); gc()
+rm(fit_pr_race_time_cat); gc()
+
+# ============================================================
+# ---- Secondary: High-intensity binge ----
+# ============================================================
 fit_hi_curr <- survey::svyglm(
-  hi_binge ~ year_lin + sex_f + age7  + race6_nat  + educ4 +
-    income6  + employ3 + marital3  + insured + factor(region),
+  hi_binge ~ year_lin + sex_f + age_group + race6_nat +
+    educ4 + income6 + employ3 + marital3 + insured + factor(region),
   design = des_curr,
   family = quasipoisson(link = "log")
 )
 
-hi_pr <- mk_pr_table(fit_hi_curr)
-readr::write_csv(hi_pr, file.path(tab_dir, "adj_PR_currentdrinkers_highIntensity.csv"))
+# Full model intact — extract everything
+diag_hi_curr <- diag_quasi(fit_hi_curr, "High-intensity binge PR")
+hi_pr        <- safe_extract(fit_hi_curr)
 
-# ---- Secondary outcome: Binge episode frequency (RR per drinking day) ----
-des_curr_freq <- subset(des_curr, !is.na(binge_episodes) & !is.na(drink_days) & drink_days > 0)
+readr::write_csv(hi_pr,
+                 file.path(tab_dir, "adj_PR_currentdrinkers_highIntensity.csv"))
+
+rm(fit_hi_curr); gc()
+
+
+# ============================================================
+# ---- Secondary: Binge episode frequency ----
+# ============================================================
+des_curr_freq <- subset(des_curr,
+                        !is.na(binge_episodes) & !is.na(drink_days) & drink_days > 0)
 
 fit_freq <- survey::svyglm(
-  binge_episodes ~ year_lin + sex_f + age7  + race6_nat  + educ4 + income6  + employ3 + marital3  + insured + factor(region),
+  binge_episodes ~ year_lin + sex_f + age_group + race6_nat +
+    educ4 + income6 + employ3 + marital3 + insured + factor(region),
   design = des_curr_freq,
   family = quasipoisson(link = "log"),
   offset = log(drink_days)
 )
 
-freq_rr <- mk_pr_table(fit_freq)  # exp(coef) are rate ratios
-readr::write_csv(freq_rr, file.path(tab_dir, "adj_RR_currentdrinkers_bingeFrequency_perDrinkDay.csv"))
+# Full model intact — extract everything
+diag_freq <- diag_quasi(fit_freq, "Binge frequency RR (offset)")
+freq_rr   <- safe_extract(fit_freq)
+
+readr::write_csv(freq_rr,
+                 file.path(tab_dir, "adj_RR_currentdrinkers_bingeFrequency_perDrinkDay.csv"))
+
+rm(fit_freq); gc()
 
 
-
-# ---- Effect modification (Year × Sex), current drinkers ----
-fit_pr_curr_int_sex <- survey::svyglm(any_binge_cdc ~ year_lin * sex_f + age7 + race6_nat + educ4 + income6 + employ3 + marital3 + insured + factor(region),
+# ============================================================
+# ---- Year × Sex interaction ----
+# ============================================================
+fit_pr_curr_int_sex <- survey::svyglm(
+  any_binge_cdc ~ year_lin * sex_f + age_group + race6_nat +
+    educ4 + income6 + employ3 + marital3 + insured + factor(region),
   design = des_curr,
   family = quasipoisson(link = "log")
 )
 
-# Joint Wald test for interaction
-wt_int_sex <- survey::regTermTest(fit_pr_curr_int_sex, ~ year_lin:sex_f)
-int_sex_test <- tibble::tibble(
-  interaction = "Year×Sex",
-  chisq = unname(wt_int_sex$test),
-  df    = unname(wt_int_sex$df),
-  p     = unname(wt_int_sex$p)
-)
-readr::write_csv(int_sex_test, file.path(tab_dir, "adj_PR_currentdrinkers_interaction_YearBySex_jointWald.csv"))
+# regTermTest — needs full model
+wt_int_sex   <- survey::regTermTest(fit_pr_curr_int_sex, ~ year_lin:sex_f)
+int_sex_test <- mk_wald_row(wt_int_sex, "YearxSex")
 
-# Stratum-specific *annual* PRs from the interaction model
-co  <- stats::coef(fit_pr_curr_int_sex)
-vc  <- stats::vcov(fit_pr_curr_int_sex)
+# diag — needs full model
+diag_int_sex <- diag_quasi(fit_pr_curr_int_sex, "PR current, Year×Sex")
 
-# Female (reference): PR per +1 year = exp(beta_year)
-b_f <- unname(co["year_lin"])
-se_f <- sqrt(vc["year_lin","year_lin"])
+# coef/vcov — needs full model
+co_sex <- stats::coef(fit_pr_curr_int_sex)
+vc_sex <- stats::vcov(fit_pr_curr_int_sex)
+
+rm(fit_pr_curr_int_sex); gc()
+
+# Sex-specific annual PRs — uses stored coef/vcov
+b_f  <- unname(co_sex["year_lin"])
+se_f <- sqrt(vc_sex["year_lin","year_lin"])
 pr_f <- tibble::tibble(
-  stratum = "Female",
+  stratum     = "Female",
   PR_per_year = exp(b_f),
-  LCL = exp(b_f - 1.96*se_f),
-  UCL = exp(b_f + 1.96*se_f)
+  LCL         = exp(b_f - 1.96*se_f),
+  UCL         = exp(b_f + 1.96*se_f),
+  p           = 2*(1 - pnorm(abs(b_f/se_f)))
 )
 
-# Male: PR per +1 year = exp(beta_year + beta_year:sex_fMale)
-b_m <- unname(co["year_lin"]) + unname(co["year_lin:sex_fMale"])
-se_m <- sqrt(vc["year_lin","year_lin"] + vc["year_lin:sex_fMale","year_lin:sex_fMale"] +
-               2*vc["year_lin","year_lin:sex_fMale"])
+b_m  <- unname(co_sex["year_lin"]) + unname(co_sex["year_lin:sex_fMale"])
+se_m <- sqrt(vc_sex["year_lin","year_lin"] +
+               vc_sex["year_lin:sex_fMale","year_lin:sex_fMale"] +
+               2*vc_sex["year_lin","year_lin:sex_fMale"])
 pr_m <- tibble::tibble(
-  stratum = "Male",
+  stratum     = "Male",
   PR_per_year = exp(b_m),
-  LCL = exp(b_m - 1.96*se_m),
-  UCL = exp(b_m + 1.96*se_m)
+  LCL         = exp(b_m - 1.96*se_m),
+  UCL         = exp(b_m + 1.96*se_m),
+  p           = 2*(1 - pnorm(abs(b_m/se_m)))
 )
 
+readr::write_csv(int_sex_test,
+                 file.path(tab_dir, "adj_PR_currentdrinkers_interaction_YearBySex_jointWald.csv"))
 readr::write_csv(dplyr::bind_rows(pr_f, pr_m),
                  file.path(tab_dir, "adj_PR_currentdrinkers_TrendBySex_annualPR.csv"))
 
 
-# ===== Model diagnostics: dispersion (phi) and DF =====
-diag_quasi <- function(fit, label){
-  rp <- residuals(fit, type="pearson")
-  df <- fit$df.residual
-  phi <- sum(rp^2, na.rm=TRUE)/df
-  tibble::tibble(model = label,
-                 df_resid = df,
-                 phi_pearson = phi,
-                 family = paste0(class(fit$family)[1], " (", fit$family$family, ", link=", fit$family$link, ")"))
-}
+# ============================================================
+# ---- Year × Income interaction ----
+# ============================================================
+fit_pr_income_time <- survey::svyglm(
+  any_binge_cdc ~ year_lin * income6 + sex_f + age_group + race6_nat +
+    educ4 + employ3 + marital3 + insured + factor(region),
+  design = des_curr,
+  family = quasipoisson(link = "log")
+)
+
+# regTermTest — needs full model
+wt_income_time   <- survey::regTermTest(fit_pr_income_time, ~ year_lin:income6)
+income_time_test <- mk_wald_row(wt_income_time, "YearxIncome") 
+
+# diag — needs full model
+diag_income_time <- diag_quasi(fit_pr_income_time, "PR current, Year×Income")
+
+# coef/vcov — needs full model
+income_levels <- levels(des_curr$variables$income6)
+co_inc        <- stats::coef(fit_pr_income_time)
+vc_inc        <- stats::vcov(fit_pr_income_time)
+
+rm(fit_pr_income_time); gc()
+
+# Income-specific annual PRs — uses stored coef/vcov
+income_annual_pr <- purrr::map_dfr(income_levels, function(inc) {
+  if (inc == "<$15k") {
+    b  <- unname(co_inc["year_lin"])
+    se <- sqrt(vc_inc["year_lin","year_lin"])
+  } else {
+    int_term <- paste0("year_lin:income6", inc)
+    if (!int_term %in% names(co_inc)) return(tibble::tibble())
+    b  <- unname(co_inc["year_lin"]) + unname(co_inc[int_term])
+    se <- sqrt(
+      vc_inc["year_lin","year_lin"] +
+        vc_inc[int_term, int_term] +
+        2*vc_inc["year_lin", int_term]
+    )
+  }
+  tibble::tibble(
+    income6     = inc,
+    PR_per_year = exp(b),
+    LCL         = exp(b - 1.96*se),
+    UCL         = exp(b + 1.96*se),
+    p           = 2*(1 - pnorm(abs(b/se)))
+  )
+})
+
+readr::write_csv(income_time_test,
+                 file.path(tab_dir, "adj_PR_currentdrinkers_interaction_YearByIncome_jointWald.csv"))
+readr::write_csv(income_annual_pr,
+                 file.path(tab_dir, "adj_PR_currentdrinkers_TrendByIncome_annualPR.csv"))
+
+
+# ============================================================
+# ---- Collect all dispersion diagnostics ----
+# ============================================================
+# All diag_* objects were created inline above while each model was whole
 diag_tab <- dplyr::bind_rows(
-  diag_quasi(fit_pr_curr_lin,       "PR current, linear year"),
-  diag_quasi(fit_pr_all_lin,        "PR all, linear year"),
-  diag_quasi(fit_hi_curr,           "High-intensity PR"),
-  diag_quasi(fit_freq,              "Binge frequency RR (offset)"),
-  diag_quasi(fit_pr_curr_int_sex,   "PR current, Year×Sex")
+  diag_curr_lin,       # from Model 1 block (earlier in script)
+  diag_curr_covid,
+  diag_all_lin,
+  diag_all_covid,
+  diag_race_lin,
+  diag_race_cat,
+  diag_hi_curr,
+  diag_freq,
+  diag_int_sex,
+  diag_income_time
 )
 readr::write_csv(diag_tab, file.path(tab_dir, "model_diagnostics_phi.csv"))
+message("All models and diagnostics complete")
 
 
-
-
+# ============================================================
 # ===== B) Overall all-adults — unadjusted, looped by year =====
+# ============================================================
 prev_all_prop <- purrr::map_dfr(2011:2024, function(yr) {
-  df_yr <- des_all$variables %>% dplyr::filter(year == yr)
+  df_yr  <- des_all$variables %>% dplyr::filter(year == yr)
   des_yr <- survey::svydesign(id=~psu_id, strata=~strata_id,
                               weights=~wt, data=df_yr, nest=TRUE)
   out <- survey::svymean(~any_binge_cdc, des_yr, na.rm=TRUE)
@@ -2493,13 +2794,13 @@ readr::write_csv(prev_all_prop,
                  file.path(tab_dir, "main_prev_any_binge_alladults_CI_prop.csv"))
 readr::write_csv(prev_all_prop %>%
                    dplyr::mutate(est=est*100, lcl=lcl*100, ucl=ucl*100,
-                                 ci=sprintf("%.1f (%.1f–%.1f)", est,lcl,ucl)),
+                                 ci=sprintf("%.1f (%.1f\u2013%.1f)", est,lcl,ucl)),
                  file.path(tab_dir, "main_prev_any_binge_alladults_CI_pct.csv"))
 
 
 # ===== C) Overall current drinkers — unadjusted, looped by year =====
 prev_curr_prop <- purrr::map_dfr(2011:2024, function(yr) {
-  df_yr <- des_curr$variables %>% dplyr::filter(year == yr)
+  df_yr  <- des_curr$variables %>% dplyr::filter(year == yr)
   des_yr <- survey::svydesign(id=~psu_id, strata=~strata_id,
                               weights=~wt, data=df_yr, nest=TRUE)
   out <- survey::svymean(~any_binge_cdc, des_yr, na.rm=TRUE)
@@ -2513,13 +2814,13 @@ readr::write_csv(prev_curr_prop,
                  file.path(tab_dir, "main_prev_any_binge_current_CI_prop.csv"))
 readr::write_csv(prev_curr_prop %>%
                    dplyr::mutate(est=est*100, lcl=lcl*100, ucl=ucl*100,
-                                 ci=sprintf("%.1f (%.1f–%.1f)", est,lcl,ucl)),
+                                 ci=sprintf("%.1f (%.1f\u2013%.1f)", est,lcl,ucl)),
                  file.path(tab_dir, "main_prev_any_binge_current_CI_pct.csv"))
 
 
 # ===== D) By sex — unadjusted, looped by year =====
 prev_sex_all <- purrr::map_dfr(2011:2024, function(yr) {
-  df_yr <- des_all$variables %>%
+  df_yr  <- des_all$variables %>%
     dplyr::filter(year == yr, !is.na(sex_f))
   des_yr <- survey::svydesign(id=~psu_id, strata=~strata_id,
                               weights=~wt, data=df_yr, nest=TRUE)
@@ -2537,9 +2838,9 @@ readr::write_csv(prev_sex_all,
                  file.path(tab_dir, "main_prev_any_binge_alladults_by_sex_CI_prop.csv"))
 
 
-# ===== E1) By age group (10-bin) — unadjusted, looped by year =====
+# ===== E1) By age group (10-bin) — unadjusted =====
 prev_age10_all <- purrr::map_dfr(2011:2024, function(yr) {
-  df_yr <- des_all$variables %>%
+  df_yr  <- des_all$variables %>%
     dplyr::filter(year == yr, !is.na(age_group))
   des_yr <- survey::svydesign(id=~psu_id, strata=~strata_id,
                               weights=~wt, data=df_yr, nest=TRUE)
@@ -2558,9 +2859,9 @@ readr::write_csv(prev_age10_all,
                  file.path(tab_dir, "main_prev_any_binge_alladults_by_age10_CI_prop.csv"))
 
 
-# ===== E2) By age group (5-bin) — unadjusted, looped by year =====
+# ===== E2) By age group (5-bin) — unadjusted =====
 prev_age5_all <- purrr::map_dfr(2011:2024, function(yr) {
-  df_yr <- des_all$variables %>%
+  df_yr  <- des_all$variables %>%
     dplyr::filter(year == yr, !is.na(age_fallback))
   des_yr <- survey::svydesign(id=~psu_id, strata=~strata_id,
                               weights=~wt, data=df_yr, nest=TRUE)
@@ -2579,7 +2880,7 @@ readr::write_csv(prev_age5_all,
                  file.path(tab_dir, "main_prev_any_binge_alladults_by_age5_CI_prop.csv"))
 
 
-# ===== F) Side-by-side both denominators =====
+# ===== F) Both denominators side-by-side =====
 both_prop <- dplyr::bind_rows(
   prev_all_prop  %>% dplyr::mutate(denom = "All adults"),
   prev_curr_prop %>% dplyr::mutate(denom = "Current drinkers")
@@ -2590,20 +2891,16 @@ readr::write_csv(both_prop,
 
 
 # ===== G) Adjacent year deltas — unadjusted =====
-
-# NOTE: Adjacent-year differences are computed as DESCRIPTIVE summaries only.
-# Serial correlation between adjacent tests means BH-adjusted p-values are
-# approximate. Inferential trend claims rely on the regression PR models and
-# Joinpoint APC. These tables support figures and are not used for hypothesis testing.
+# NOTE: Descriptive summaries only. Inferential claims rely on regression
+# PR models and Joinpoint APC. BH-adjusted p-values are approximate due
+# to serial correlation between adjacent tests.
 
 mk_pairs <- function(df_ci) {
   df_se <- df_ci %>%
     dplyr::mutate(se = (ucl - lcl) / (2 * 1.96)) %>%
     dplyr::select(year, est, se)
-  
   yrs   <- sort(unique(df_se$year))
   pairs <- tibble::tibble(year1 = yrs[-length(yrs)], year2 = yrs[-1])
-  
   pairs %>%
     dplyr::left_join(df_se, by = c("year1" = "year")) %>%
     dplyr::rename(est1 = est, se1 = se) %>%
@@ -2618,24 +2915,22 @@ mk_pairs <- function(df_ci) {
     dplyr::select(year1, year2, diff_pp, z, p_two)
 }
 
-diff_all_years  <- mk_pairs(prev_all_prop)  %>%
-  dplyr::mutate(denom="All adults", .before=1)
-diff_curr_years <- mk_pairs(prev_curr_prop) %>%
-  dplyr::mutate(denom="Current drinkers", .before=1)
-
-diff_both_years <- dplyr::bind_rows(diff_all_years, diff_curr_years) %>%
+diff_both_years <- dplyr::bind_rows(
+  mk_pairs(prev_all_prop)  %>% dplyr::mutate(denom = "All adults",       .before=1),
+  mk_pairs(prev_curr_prop) %>% dplyr::mutate(denom = "Current drinkers", .before=1)
+) %>%
   dplyr::arrange(denom, year1) %>%
   dplyr::group_by(denom) %>%
-  dplyr::mutate(p_adj_bh = p.adjust(p_two, method="BH")) %>%
+  dplyr::mutate(p_adj_bh = p.adjust(p_two, method = "BH")) %>%
   dplyr::ungroup()
 
 readr::write_csv(diff_both_years,
                  file.path(tab_dir, "main_prev_any_binge_adjacent_diffs.csv"))
 
 
-# ===== H) By race — all adults, unadjusted, looped by year =====
+# ===== H) By race — all adults, unadjusted =====
 prev_race_all <- purrr::map_dfr(2011:2024, function(yr) {
-  df_yr <- des_all$variables %>%
+  df_yr  <- des_all$variables %>%
     dplyr::filter(year == yr, !is.na(race6_nat))
   des_yr <- survey::svydesign(id=~psu_id, strata=~strata_id,
                               weights=~wt, data=df_yr, nest=TRUE)
@@ -2657,9 +2952,9 @@ readr::write_csv(prev_race_all %>%
                  file.path(tab_dir, "main_prev_any_binge_alladults_by_race6_CI_pct.csv"))
 
 
-# ===== I) By race — current drinkers, unadjusted, looped by year =====
+# ===== I) By race — current drinkers, unadjusted =====
 prev_race_curr <- purrr::map_dfr(2011:2024, function(yr) {
-  df_yr <- des_curr$variables %>%
+  df_yr  <- des_curr$variables %>%
     dplyr::filter(year == yr, !is.na(race6_nat))
   des_yr <- survey::svydesign(id=~psu_id, strata=~strata_id,
                               weights=~wt, data=df_yr, nest=TRUE)
@@ -2680,16 +2975,12 @@ readr::write_csv(prev_race_curr %>%
                    dplyr::mutate(dplyr::across(c(est,lcl,ucl), ~.x*100)),
                  file.path(tab_dir, "main_prev_any_binge_current_by_race6_CI_pct.csv"))
 
-# Clean up unadjusted race objects — needed for section J
-# NOTE: keep prev_race_all and prev_race_curr alive until after J runs
 
-# ===== Step 10) Weighted Table 1 & Rao–Scott tests =====
+# ===== Step 10) Weighted Table 1 =====
 make_table1 <- function(des, by_vars) {
   purrr::map_dfr(by_vars, function(v) {
-    f <- as.formula(paste0("~any_binge_cdc + ", v))
-    
-    out <- survey::svyby(
-      ~any_binge_cdc, 
+    survey::svyby(
+      ~any_binge_cdc,
       as.formula(paste0("~", v)),
       des,
       survey::svymean,
@@ -2698,28 +2989,21 @@ make_table1 <- function(des, by_vars) {
     ) %>%
       tibble::as_tibble() %>%
       dplyr::transmute(
-        variable = v,
-        level    = as.character(.data[[v]]),
+        variable       = v,
+        level          = as.character(.data[[v]]),
         prev_binge     = any_binge_cdc * 100,
         prev_binge_lcl = ci_l * 100,
         prev_binge_ucl = ci_u * 100,
-        ci = sprintf("%.1f (%.1f–%.1f)",
+        ci = sprintf("%.1f (%.1f\u2013%.1f)",
                      prev_binge, prev_binge_lcl, prev_binge_ucl)
       )
-    out
   })
 }
 
-# Run it
-tab1_all <- make_table1(
-  des_all,
-  c("sex_f","age7","race6_nat","educ4","income6","marital3")
-)
-
-tab1_curr <- make_table1(
-  des_curr,
-  c("sex_f","age7","race6_nat","educ4","income6","marital3")
-)
+tab1_all  <- make_table1(des_all,
+                         c("sex_f","age_group","race6_nat","educ4","income6","marital3"))
+tab1_curr <- make_table1(des_curr,
+                         c("sex_f","age_group","race6_nat","educ4","income6","marital3"))
 
 readr::write_csv(tab1_all,
                  file.path(tab_dir, "table1_alladults_binge_prev_by_covariate.csv"))
@@ -2727,22 +3011,15 @@ readr::write_csv(tab1_curr,
                  file.path(tab_dir, "table1_current_binge_prev_by_covariate.csv"))
 
 
-
-
-
-# ===== J) Adjacent year deltas within each race group (both denominators) =====
-
+# ===== J) Adjacent year deltas within each race group =====
 mk_pairs_by <- function(df_ci, group_var) {
   gname <- rlang::as_name(rlang::ensym(group_var))
   df_ci <- dplyr::mutate(df_ci, se = (ucl - lcl) / (2 * 1.96))
-  
   dplyr::bind_rows(lapply(split(df_ci, df_ci[[gname]]), function(dd) {
     yrs <- sort(unique(dd$year))
     if (length(yrs) < 2) return(tibble::tibble())
-    
     pairs <- tibble::tibble(year1 = yrs[-length(yrs)], year2 = yrs[-1])
     dd2   <- dd %>% dplyr::select(year, est, se)
-    
     pairs %>%
       dplyr::left_join(dd2, by = c("year1" = "year")) %>%
       dplyr::rename(est1 = est, se1 = se) %>%
@@ -2759,34 +3036,25 @@ mk_pairs_by <- function(df_ci, group_var) {
   }))
 }
 
-race_diffs_all_ageadj  <- mk_pairs_by(prev_race_all_ageadj,  race6_nat) %>%
-  dplyr::mutate(denom = "All adults", .before = 1)
+race_diffs_all_ageadj <- mk_pairs_by(prev_race_all_ageadj, race6_nat) %>%
+  dplyr::mutate(denom = "All adults", .before = 1) %>%
+  dplyr::group_by(denom, race6_nat) %>%
+  dplyr::mutate(p_adj_bh = p.adjust(p_two, method = "BH")) %>%
+  dplyr::ungroup()
 
 race_diffs_curr_ageadj <- mk_pairs_by(prev_race_curr_ageadj, race6_nat) %>%
-  dplyr::mutate(denom = "Current drinkers", .before = 1)
-
-race_diffs_all_ageadj <- race_diffs_all_ageadj %>%
+  dplyr::mutate(denom = "Current drinkers", .before = 1) %>%
   dplyr::group_by(denom, race6_nat) %>%
   dplyr::mutate(p_adj_bh = p.adjust(p_two, method = "BH")) %>%
   dplyr::ungroup()
 
-race_diffs_curr_ageadj <- race_diffs_curr_ageadj %>%
-  dplyr::group_by(denom, race6_nat) %>%
-  dplyr::mutate(p_adj_bh = p.adjust(p_two, method = "BH")) %>%
-  dplyr::ungroup()
+readr::write_csv(race_diffs_all_ageadj,
+                 file.path(tab_dir, "main_prev_any_binge_alladults_by_race6_AGEADJ2000_adjacent_diffs.csv"))
+readr::write_csv(race_diffs_curr_ageadj,
+                 file.path(tab_dir, "main_prev_any_binge_current_by_race6_AGEADJ2000_adjacent_diffs.csv"))
 
-readr::write_csv(
-  race_diffs_all_ageadj,
-  file.path(tab_dir, "main_prev_any_binge_alladults_by_race6_AGEADJ2000_adjacent_diffs.csv")
-)
-
-readr::write_csv(
-  race_diffs_curr_ageadj,
-  file.path(tab_dir, "main_prev_any_binge_current_by_race6_AGEADJ2000_adjacent_diffs.csv")
-)
 
 # ===== Step 11) Sensitivity: including territories =====
-
 cache_files <- list.files(
   file.path(PROJ_DIR, "data/cache"),
   pattern = paste0("^BRFSS_\\d{4}_", CACHE_VER, "\\.rds$"),
@@ -2796,7 +3064,6 @@ cache_files <- list.files(
 df_all_incl <- lapply(cache_files, readRDS) %>%
   dplyr::bind_rows() %>%
   dplyr::mutate(
-    # year-specific strata/PSU — same as main analysis
     strata = interaction(year, strata, drop = TRUE, lex.order = TRUE),
     psu    = interaction(year, psu,    drop = TRUE, lex.order = TRUE)
   ) %>%
@@ -2807,11 +3074,8 @@ df_all_incl <- lapply(cache_files, readRDS) %>%
   )
 
 des_all_incl <- survey::svydesign(
-  id      = ~psu_id,
-  strata  = ~strata_id,
-  weights = ~wt,
-  data    = df_all_incl,
-  nest    = TRUE
+  id = ~psu_id, strata = ~strata_id, weights = ~wt,
+  data = df_all_incl, nest = TRUE
 )
 
 des_all_incl <- stats::update(
@@ -2823,7 +3087,6 @@ des_all_incl <- stats::update(
   )
 )
 
-# Overall prevalence comparison: 50 states+DC vs including territories
 prev_statesDC <- survey::svyby(
   ~any_binge_cdc, ~year, des_all, survey::svymean, na.rm = TRUE
 ) %>%
@@ -2838,9 +3101,152 @@ sens_overall <- dplyr::left_join(prev_statesDC, prev_incl, by = "year") %>%
   dplyr::mutate(diff_pp = (est_incl - est_statesDC) * 100) %>%
   dplyr::arrange(year)
 
-readr::write_csv(
-  sens_overall,
-  file.path(tab_dir, "sensitivity_territories_overall_prev_by_year.csv")
-)
+readr::write_csv(sens_overall,
+                 file.path(tab_dir, "sensitivity_territories_overall_prev_by_year.csv"))
 
 rm(df_all_incl, des_all_incl); gc()
+message("Script complete")
+
+# ======= Join Point Analysis using CSVs created above =======
+
+# ---- Helper: convert any prev CSV to Joinpoint format ----
+to_joinpoint <- function(df, out_name) {
+  df %>%
+    dplyr::mutate(se = (ucl - lcl) / (2 * 1.96)) %>%
+    dplyr::select(year, est, se) %>%
+    readr::write_csv(file.path(tab_dir, out_name))
+}
+
+# ---- Overall ----
+readr::read_csv(file.path(tab_dir, "main_prev_any_binge_alladults_AGEADJ2000_CI_prop.csv"),
+                show_col_types = FALSE) %>%
+  to_joinpoint("joinpoint_input_alladults_overall.csv")
+
+readr::read_csv(file.path(tab_dir, "main_prev_any_binge_current_AGEADJ2000_CI_prop.csv"),
+                show_col_types = FALSE) %>%
+  to_joinpoint("joinpoint_input_current_overall.csv")
+
+# ---- By sex ----
+readr::read_csv(file.path(tab_dir, "main_prev_any_binge_alladults_by_sex_AGEADJ2000_CI_prop.csv"),
+                show_col_types = FALSE) %>%
+  dplyr::group_by(sex) %>%
+  dplyr::group_walk(~ to_joinpoint(
+    .x, paste0("joinpoint_input_alladults_sex_", .y$sex, ".csv")
+  ))
+
+readr::read_csv(file.path(tab_dir, "main_prev_any_binge_current_by_sex_AGEADJ2000_CI_prop.csv"),
+                show_col_types = FALSE) %>%
+  dplyr::group_by(sex) %>%
+  dplyr::group_walk(~ to_joinpoint(
+    .x, paste0("joinpoint_input_current_sex_", .y$sex, ".csv")
+  ))
+
+# ---- By race ----
+readr::read_csv(file.path(tab_dir, "main_prev_any_binge_alladults_by_race6_AGEADJ2000_CI_prop.csv"),
+                show_col_types = FALSE) %>%
+  dplyr::group_by(race6_nat) %>%
+  dplyr::group_walk(~ to_joinpoint(
+    .x, paste0("joinpoint_input_alladults_",
+               gsub("[^A-Za-z0-9]", "_", .y$race6_nat), ".csv")
+  ))
+
+readr::read_csv(file.path(tab_dir, "main_prev_any_binge_current_by_race6_AGEADJ2000_CI_prop.csv"),
+                show_col_types = FALSE) %>%
+  dplyr::group_by(race6_nat) %>%
+  dplyr::group_walk(~ to_joinpoint(
+    .x, paste0("joinpoint_input_current_",
+               gsub("[^A-Za-z0-9]", "_", .y$race6_nat), ".csv")
+  ))
+
+# ---- By age group ----
+readr::read_csv(file.path(tab_dir, "main_prev_any_binge_alladults_by_agegroup_CI_prop.csv"),
+                show_col_types = FALSE) %>%
+  dplyr::group_by(age_group) %>%
+  dplyr::group_walk(~ to_joinpoint(
+    .x, paste0("joinpoint_input_alladults_age_",
+               gsub("[^A-Za-z0-9]", "_", .y$age_group), ".csv")
+  ))
+
+readr::read_csv(file.path(tab_dir, "main_prev_any_binge_current_by_agegroup_CI_prop.csv"),
+                show_col_types = FALSE) %>%
+  dplyr::group_by(age_group) %>%
+  dplyr::group_walk(~ to_joinpoint(
+    .x, paste0("joinpoint_input_current_age_",
+               gsub("[^A-Za-z0-9]", "_", .y$age_group), ".csv")
+  ))
+
+# ---- By education ----
+readr::read_csv(file.path(tab_dir, "main_prev_any_binge_alladults_by_educ4_AGEADJ2000_CI_prop.csv"),
+                show_col_types = FALSE) %>%
+  dplyr::group_by(educ4) %>%
+  dplyr::group_walk(~ to_joinpoint(
+    .x, paste0("joinpoint_input_alladults_educ_",
+               gsub("[^A-Za-z0-9]", "_", .y$educ4), ".csv")
+  ))
+
+readr::read_csv(file.path(tab_dir, "main_prev_any_binge_current_by_educ4_AGEADJ2000_CI_prop.csv"),
+                show_col_types = FALSE) %>%
+  dplyr::group_by(educ4) %>%
+  dplyr::group_walk(~ to_joinpoint(
+    .x, paste0("joinpoint_input_current_educ_",
+               gsub("[^A-Za-z0-9]", "_", .y$educ4), ".csv")
+  ))
+
+message("All Joinpoint input files written")
+
+# Find all joinpoint input files
+jp_files <- list.files(tab_dir, 
+                       pattern = "^joinpoint_input_.*\\.csv$",
+                       full.names = TRUE)
+
+# Check all files at once
+jp_check <- purrr::map_dfr(jp_files, function(f) {
+  df <- readr::read_csv(f, show_col_types = FALSE)
+  
+  tibble::tibble(
+    file          = basename(f),
+    # Column name check
+    has_year      = "year" %in% names(df),
+    has_est       = "est"  %in% names(df),
+    has_se        = "se"   %in% names(df),
+    n_cols        = ncol(df),
+    n_rows        = nrow(df),
+    # Proportion vs percentage check
+    est_max       = max(df$est, na.rm = TRUE),
+    est_min       = min(df$est, na.rm = TRUE),
+    is_proportion = max(df$est, na.rm = TRUE) < 1,
+    # SE sanity check
+    se_max        = max(df$se, na.rm = TRUE),
+    se_min        = min(df$se, na.rm = TRUE),
+    any_na_se     = any(is.na(df$se)),
+    any_zero_se   = any(df$se == 0, na.rm = TRUE),
+    # Year range check
+    year_min      = min(df$year),
+    year_max      = max(df$year),
+    n_years       = dplyr::n_distinct(df$year)
+  )
+})
+
+# Print full check
+print(jp_check, n = Inf)
+
+# Flag any problems
+problems <- jp_check %>%
+  dplyr::filter(
+    !has_year | !has_est | !has_se |  # wrong column names
+      !is_proportion                  |  # percentages not proportions
+      any_na_se                       |  # missing SEs
+      any_zero_se                     |  # zero SEs will crash Joinpoint
+      n_rows != 14                    |  # not all 14 years present
+      n_cols != 3                        # extra columns
+  ) %>%
+  dplyr::select(file, has_year, has_est, has_se, 
+                is_proportion, any_na_se, any_zero_se, 
+                n_rows, n_cols)
+
+if (nrow(problems) == 0) {
+  message("All Joinpoint input files passed checks")
+} else {
+  message("Problems found in ", nrow(problems), " files:")
+  print(problems, n = Inf)
+}
