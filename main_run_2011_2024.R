@@ -67,7 +67,6 @@ alcday5_to_days30 <- function(x){
 }
 
 
-
 # ---- Step 12: Formatting helpers ----
 fmt_pct1 <- function(x) sprintf("%.1f", x*100)
 fmt_ci1  <- function(p, l, u) sprintf("%.1f (%.1f–%.1f)", p*100, l*100, u*100)
