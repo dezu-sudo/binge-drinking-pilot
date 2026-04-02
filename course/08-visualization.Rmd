@@ -1,0 +1,387 @@
+---
+title: "Module 8: Visualization"
+output:
+  learnr::tutorial:
+    progressive: true
+    allow_skip: true
+    theme: "flatly"
+runtime: shiny_prerendered
+description: "Build publication-quality trend plots with confidence interval ribbons, annotations, and facets using ggplot2."
+---
+
+```{r setup, include=FALSE}
+library(learnr)
+library(tidyverse)
+library(survey)
+library(scales)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.width = 8, fig.height = 4.5)
+tutorial_options(exercise.timelimit = 120)
+options(survey.lonely.psu = "adjust")
+
+source("synthetic_brfss.R", local = TRUE)
+
+# Build pre-computed prevalence data for plotting
+df_all <- make_synthetic_brfss(n_per_year = 1000, years = 2011:2024) |>
+  dplyr::mutate(
+    any_binge_cdc = dplyr::case_when(rfbing5 == 2 ~ 1L, rfbing5 == 1 ~ 0L, TRUE ~ NA_integer_),
+    sex_f = factor(sex, levels = c(2, 1), labels = c("Female", "Male")),
+    age7 = dplyr::case_when(
+      age5 %in% 1:2 ~ "18-29", age5 %in% 3:4 ~ "30-39", age5 %in% 5:6 ~ "40-49",
+      age5 %in% 7:8 ~ "50-59", age5 %in% 9:10 ~ "60-69", age5 %in% 11:12 ~ "70-79",
+      age5 == 13 ~ "80+", TRUE ~ NA_character_
+    ) |> factor(levels = c("18-29","30-39","40-49","50-59","60-69","70-79","80+")),
+    strata_id = as.integer(interaction(year, strata, drop = TRUE)),
+    psu_id    = as.integer(interaction(year, psu,    drop = TRUE))
+  ) |> dplyr::filter(!is.na(sex_f), !is.na(age7))
+
+g <- function(k) c("15-19"=72169,"20-24"=66478,"25-29"=64529,"30-34"=71044,"35-39"=80762,
+                   "40-44"=81851,"45-49"=72118,"50-54"=62716,"55-59"=48454,"60-64"=38793,
+                   "65-69"=34264,"70-74"=31773,"75-79"=26999,"80-84"=17842,"85+"=15508)[[k]]
+
+w_2000_age7_counts <- c(
+  "18-29" = 0.4*g("15-19") + g("20-24") + g("25-29"),
+  "30-39" = g("30-34") + g("35-39"), "40-49" = g("40-44") + g("45-49"),
+  "50-59" = g("50-54") + g("55-59"), "60-69" = g("60-64") + g("65-69"),
+  "70-79" = g("70-74") + g("75-79"), "80+" = g("80-84") + g("85+")
+)
+
+# Compute age-adjusted overall trend
+prev_all <- purrr::map_dfr(2011:2024, function(yr) {
+  df_yr <- df_all |> dplyr::filter(year == yr)
+  des_yr <- survey::svydesign(id=~psu_id, strata=~strata_id, weights=~wt, data=df_yr, nest=TRUE)
+  des_std <- survey::svystandardize(des_yr, by=~age7, population=w_2000_age7_counts)
+  out <- survey::svymean(~any_binge_cdc, des_std, na.rm=TRUE)
+  ci <- suppressWarnings(confint(out))
+  tibble::tibble(year=as.integer(yr), est=as.numeric(out)[1], lcl=ci[1,1], ucl=ci[1,2])
+}) |> dplyr::arrange(year) |>
+  dplyr::mutate(est_pct=est*100, lcl_pct=lcl*100, ucl_pct=ucl*100,
+                roll3=(dplyr::lag(est_pct)+est_pct+dplyr::lead(est_pct))/3,
+                delta_pp=est_pct - dplyr::lag(est_pct))
+
+# Compute age-adjusted by sex
+prev_sex <- purrr::map_dfr(2011:2024, function(yr) {
+  df_yr <- df_all |> dplyr::filter(year == yr, !is.na(sex_f))
+  des_yr <- survey::svydesign(id=~psu_id, strata=~strata_id, weights=~wt, data=df_yr, nest=TRUE)
+  des_std <- survey::svystandardize(des_yr, by=~age7, over=~sex_f, population=w_2000_age7_counts)
+  survey::svyby(~any_binge_cdc, ~sex_f, des_std, survey::svymean, na.rm=TRUE, vartype="ci") |>
+    tibble::as_tibble() |> dplyr::mutate(year=yr)
+}) |>
+  dplyr::transmute(sex=as.character(sex_f), year=as.integer(year), est=any_binge_cdc, lcl=ci_l, ucl=ci_u) |>
+  dplyr::mutate(est_pct=est*100, lcl_pct=lcl*100, ucl_pct=ucl*100) |>
+  dplyr::arrange(sex, year)
+
+# Age-specific prevalence (pooled 2011-2024)
+df_all_des <- survey::svydesign(id=~psu_id, strata=~strata_id, weights=~wt, data=df_all, nest=TRUE)
+prev_age7 <- survey::svyby(~any_binge_cdc, ~age7, df_all_des, survey::svymean, na.rm=TRUE, vartype="ci") |>
+  tibble::as_tibble() |>
+  dplyr::transmute(age7=age7, est_pct=any_binge_cdc*100, lcl_pct=ci_l*100, ucl_pct=ci_u*100)
+```
+
+## Custom Theme: `theme_klean()`
+
+A minimal, publication-ready ggplot2 theme is used throughout the analysis:
+
+```{r theme-klean-def}
+theme_klean <- function(base_size = 12) {
+  ggplot2::theme_minimal(base_size = base_size) +
+    ggplot2::theme(
+      panel.grid.minor    = ggplot2::element_blank(),
+      panel.grid.major.x  = ggplot2::element_blank(),
+      axis.title.x        = ggplot2::element_blank(),
+      plot.title          = ggplot2::element_text(face = "bold"),
+      plot.subtitle       = ggplot2::element_text(color = "grey30"),
+      plot.caption        = ggplot2::element_text(size = ggplot2::rel(0.9), color = "grey40"),
+      plot.margin         = ggplot2::margin(10, 18, 10, 10),
+      legend.position     = "none"
+    )
+}
+```
+
+**Design decisions:**
+- No minor gridlines (reduce visual clutter)
+- No major vertical gridlines (trend lines already convey the x-axis structure)
+- No x-axis title (year is self-evident)
+- Bold title, muted subtitle and caption
+
+---
+
+## Figure 1: Line + CI Ribbon
+
+The primary trend figure: a solid line for estimates, a ribbon for 95% CI, and a dotted rolling average.
+
+```{r fig1-main, exercise=TRUE}
+yr_first <- min(prev_all$year)
+yr_last  <- max(prev_all$year)
+pp_change <- with(prev_all, est_pct[year == yr_last] - est_pct[year == yr_first])
+
+last_row <- prev_all[prev_all$year == yr_last, , drop = FALSE]
+end_lab  <- sprintf("%d: %.1f%% (%.1f-%.1f)", yr_last,
+                    last_row$est_pct, last_row$lcl_pct, last_row$ucl_pct)
+delta_lab <- sprintf("Change since %d: %+.1f pp", yr_first, pp_change)
+
+p_main <- ggplot(prev_all, aes(x = year, y = est_pct)) +
+  # COVID period shading
+  annotate("rect",
+           xmin = 2019.5, xmax = 2020.5,
+           ymin = -Inf,   ymax = Inf,
+           fill = "grey90", alpha = 0.4) +
+  # CI ribbon
+  geom_ribbon(aes(ymin = lcl_pct, ymax = ucl_pct), alpha = 0.18) +
+  # Trend line
+  geom_line(linewidth = 1.1) +
+  # Data points
+  geom_point(size = 2.2) +
+  # 3-point rolling average
+  geom_line(aes(y = roll3), linewidth = 0.8, linetype = "dotted") +
+  # End-label annotation
+  geom_text(data = last_row, aes(label = end_lab),
+            hjust = -0.05, vjust = 0.5, size = 3.8) +
+  # Delta annotation
+  annotate("text",
+           x = yr_last, y = max(prev_all$ucl_pct, na.rm = TRUE),
+           label = delta_lab,
+           vjust = -0.8, hjust = 1, size = 3.5, color = "grey30") +
+  scale_x_continuous(
+    breaks = scales::pretty_breaks(),
+    expand = expansion(mult = c(0.01, 0.12))
+  ) +
+  scale_y_continuous(
+    labels = scales::label_percent(accuracy = 1, scale = 1),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  labs(
+    title    = "Binge drinking prevalence (Any binge, All adults)",
+    subtitle = "Age-adjusted to Year-2000 standard (7 bands); BRFSS",
+    y        = "Prevalence (%)",
+    caption  = "Shaded band = 95% CI. Dotted line = 3-pt rolling average.\nGrey rectangle = COVID period (2020). Synthetic data for illustration."
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_klean()
+
+p_main
+```
+
+---
+
+## Figure 2: Dot + CI Error Bar
+
+Cleaner for showing individual-year uncertainty without the visual weight of a ribbon:
+
+```{r fig2-dotci, exercise=TRUE}
+p_dotci <- ggplot(prev_all, aes(x = year, y = est_pct)) +
+  geom_linerange(aes(ymin = lcl_pct, ymax = ucl_pct),
+                 linewidth = 0.9, alpha = 0.7) +
+  geom_point(size = 2.2) +
+  scale_x_continuous(breaks = scales::pretty_breaks()) +
+  scale_y_continuous(
+    labels = scales::label_percent(accuracy = 1, scale = 1),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  labs(
+    title    = "Binge drinking prevalence (Any binge, All adults)",
+    subtitle = "Age-adjusted; dot = point estimate, line = 95% CI",
+    y        = "Prevalence (%)"
+  ) +
+  theme_klean()
+
+p_dotci
+```
+
+---
+
+## Figure 3: Year-Over-Year Change (Bar Chart)
+
+Shows the magnitude and direction of each annual change:
+
+```{r fig3-delta, exercise=TRUE}
+p_delta <- prev_all |>
+  dplyr::filter(!is.na(delta_pp)) |>
+  ggplot(aes(x = year, y = delta_pp, fill = delta_pp > 0)) +
+  geom_col(width = 0.7, alpha = 0.9, show.legend = FALSE) +
+  geom_hline(yintercept = 0, linewidth = 0.6, color = "grey50") +
+  scale_x_continuous(breaks = scales::pretty_breaks()) +
+  scale_y_continuous(
+    labels = function(x) sprintf("%+.1f", x),
+    expand = expansion(mult = c(0.05, 0.05))
+  ) +
+  scale_fill_manual(values = c("TRUE" = "#e15759", "FALSE" = "#4e79a7")) +
+  labs(
+    title    = "Year-over-year change in binge drinking prevalence",
+    subtitle = sprintf("Net change %d-%d: %+.1f pp",
+                       min(prev_all$year), max(prev_all$year),
+                       with(prev_all,
+                            est_pct[year==max(year)] - est_pct[year==min(year)])),
+    y        = "Change (percentage points)"
+  ) +
+  theme_klean()
+
+p_delta
+```
+
+---
+
+## Figure 4: Stratified Trend by Sex
+
+```{r fig4-sex, exercise=TRUE}
+p_sex <- ggplot(prev_sex, aes(x = year, y = est_pct, color = sex, fill = sex, group = sex)) +
+  # COVID period
+  annotate("rect", xmin = 2019.5, xmax = 2020.5, ymin = -Inf, ymax = Inf,
+           fill = "grey90", alpha = 0.4) +
+  geom_ribbon(aes(ymin = lcl_pct, ymax = ucl_pct), alpha = 0.15, color = NA) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = scales::pretty_breaks()) +
+  scale_y_continuous(
+    labels = scales::label_percent(accuracy = 1, scale = 1),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  scale_color_manual(values = c("Female" = "#e15759", "Male" = "#4e79a7")) +
+  scale_fill_manual(values  = c("Female" = "#e15759", "Male" = "#4e79a7")) +
+  labs(
+    title    = "Binge drinking prevalence by sex",
+    subtitle = "Age-adjusted to Year-2000 standard; BRFSS",
+    y        = "Prevalence (%)",
+    color    = NULL, fill = NULL
+  ) +
+  theme_klean() +
+  theme(legend.position = "bottom")
+
+p_sex
+```
+
+---
+
+## Figure 5: Age Band — Dot + CI (Pooled)
+
+```{r fig5-age, exercise=TRUE}
+p_age7 <- ggplot(prev_age7, aes(x = age7, y = est_pct)) +
+  geom_linerange(aes(ymin = lcl_pct, ymax = ucl_pct), linewidth = 1) +
+  geom_point(size = 2.4) +
+  scale_y_continuous(
+    labels = scales::label_percent(accuracy = 1, scale = 1),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  labs(
+    title    = "Any binge drinking by age band (pooled 2011-2024)",
+    subtitle = "BRFSS; survey-weighted; 95% CI",
+    y        = "Prevalence (%)",
+    x        = "Age band",
+    caption  = "Note: not age-standardized — age is the stratifier."
+  ) +
+  theme_klean() +
+  theme(axis.title.x = element_text())
+
+p_age7
+```
+
+---
+
+## Figure 6: Faceted Small Multiples (Age × Year)
+
+Faceted plots are useful when you have many subgroups — one panel per subgroup keeps trends readable:
+
+```{r fig6-facet, exercise=TRUE}
+# Age-specific trends by year
+prev_age_byyear <- purrr::map_dfr(2011:2024, function(yr) {
+  df_yr <- df_all |> dplyr::filter(year == yr)
+  des_yr <- survey::svydesign(id=~psu_id, strata=~strata_id, weights=~wt, data=df_yr, nest=TRUE)
+  survey::svyby(~any_binge_cdc, ~age7, des_yr, survey::svymean, na.rm=TRUE, vartype="ci") |>
+    tibble::as_tibble() |> dplyr::mutate(year = yr)
+}) |>
+  dplyr::transmute(
+    age7 = factor(age7, levels = c("18-29","30-39","40-49","50-59","60-69","70-79","80+")),
+    year = as.integer(year),
+    est_pct = any_binge_cdc * 100,
+    lcl_pct = ci_l * 100,
+    ucl_pct = ci_u * 100
+  )
+
+p_facet <- ggplot(prev_age_byyear, aes(x = year, y = est_pct)) +
+  geom_ribbon(aes(ymin = lcl_pct, ymax = ucl_pct), alpha = 0.18) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 1.9) +
+  facet_wrap(~ age7, ncol = 4) +
+  scale_x_continuous(breaks = c(2011, 2017, 2024)) +
+  scale_y_continuous(
+    labels = scales::label_percent(accuracy = 1, scale = 1)
+  ) +
+  labs(
+    title    = "Any binge drinking by age band over time",
+    subtitle = "BRFSS; survey-weighted; 95% CI ribbons",
+    y        = "Prevalence (%)"
+  ) +
+  theme_klean() +
+  theme(axis.title.x = ggplot2::element_text())
+
+p_facet
+```
+
+---
+
+## Figure 7: Heatmap (Year × Age)
+
+Heatmaps reveal patterns quickly across a two-dimensional table:
+
+```{r fig7-heatmap, exercise=TRUE}
+p_heat <- ggplot(prev_age_byyear, aes(x = year, y = age7, fill = est_pct)) +
+  geom_tile() +
+  scale_fill_gradient(
+    name = "Prev (%)",
+    low  = "white",
+    high = "black"
+  ) +
+  scale_x_continuous(breaks = scales::pretty_breaks()) +
+  labs(
+    title    = "Any binge drinking: heatmap by year and age band",
+    subtitle = "Darker = higher prevalence; survey-weighted",
+    x        = NULL, y = NULL
+  ) +
+  theme_klean() +
+  theme(legend.position = "right")
+
+p_heat
+```
+
+---
+
+## Saving Figures
+
+The `save_both()` helper saves every figure as both PNG (for reports/presentations) and SVG (for vector editing):
+
+```{r save-both, eval=FALSE}
+save_both <- function(p, fname, w = 8, h = 4.75, dpi = 320) {
+  ggplot2::ggsave(
+    file.path(fig_dir, paste0(fname, ".png")),
+    p, width = w, height = h, units = "in", dpi = dpi, bg = "white"
+  )
+  ggplot2::ggsave(
+    file.path(fig_dir, paste0(fname, ".svg")),
+    p, width = w, height = h, units = "in", dpi = dpi, bg = "white"
+  )
+}
+
+# Example usage:
+save_both(p_main, "main_prev_any_binge_alladults_AGEADJ2000_line_ribbon")
+save_both(p_sex,  "main_prev_any_binge_by_sex_AGEADJ2000_line_ribbon")
+```
+
+**Key settings:**
+- `dpi = 320` — exceeds journal minimum (300 dpi) with room for layout scaling
+- `bg = "white"` — prevents transparent backgrounds in PNG
+- Fixed dimensions in inches (`units = "in"`) — consistent sizing across figures
+
+---
+
+## Module Summary
+
+You have learned:
+
+- `theme_klean()` creates a minimal, publication-quality ggplot2 theme
+- `geom_ribbon()` shows 95% CI as a shaded band around the trend line
+- `annotate("rect", ...)` highlights specific periods (e.g., COVID, policy changes)
+- Rolling averages (`lag()` + `lead()`) smooth noisy estimates for visual clarity
+- `facet_wrap()` creates small-multiple panels for multi-subgroup trends
+- `geom_tile()` + `scale_fill_gradient()` builds heatmaps for two-dimensional patterns
+- `save_both()` exports PNG (print) and SVG (vector) simultaneously
+
+**Next:** Module 9 covers regression modeling — Prevalence Ratio (PR) models, interaction terms, and effect modification testing.

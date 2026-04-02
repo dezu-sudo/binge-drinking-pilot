@@ -1,0 +1,268 @@
+---
+title: "Module 1: Introduction to BRFSS and Binge Drinking Epidemiology"
+output:
+  learnr::tutorial:
+    progressive: true
+    allow_skip: true
+    theme: "flatly"
+runtime: shiny_prerendered
+description: "Learn what BRFSS is, how binge drinking is defined, and what this analysis aims to accomplish."
+---
+
+```{r setup, include=FALSE}
+library(learnr)
+library(tidyverse)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+tutorial_options(exercise.timelimit = 60)
+```
+
+## Welcome to the Course
+
+This course teaches you to conduct a **national-scale epidemiological surveillance analysis** of binge drinking trends in the United States using the Behavioral Risk Factor Surveillance System (BRFSS). You will work through the same methodology used in peer-reviewed research — from raw survey data through regression modeling and publication-quality visualization.
+
+**What you will learn:**
+
+- Load and harmonize 14 years of BRFSS survey data (2011–2024)
+- Handle the complexities of nationally representative complex survey designs
+- Compute age-standardized prevalence estimates with confidence intervals
+- Stratify analyses by sex, race/ethnicity, education, and income
+- Model trends with Poisson regression and test for effect modification
+- Build publication-ready figures in ggplot2
+
+**Prerequisites:** Familiarity with R, dplyr, and ggplot2 basics.
+
+---
+
+## What is BRFSS?
+
+The **Behavioral Risk Factor Surveillance System (BRFSS)** is the world's largest continuously conducted health survey system.
+
+**Key facts:**
+
+| Feature | Detail |
+|---------|--------|
+| Sponsor | U.S. Centers for Disease Control and Prevention (CDC) |
+| Frequency | Annual (every year since 1984) |
+| Coverage | All 50 U.S. states + Washington D.C. + territories |
+| Respondents | ~450,000 adults (18+) per year |
+| Mode | Telephone survey (landline + cellular) |
+| Data format | SAS transport (XPT) files |
+
+**Why BRFSS?**
+
+BRFSS is the primary data source for state-level behavioral health surveillance in the U.S. Because it samples every state annually, it allows us to:
+
+1. Track **national trends** over time
+2. Compare **state-to-state variation**
+3. Estimate prevalence in **demographic subgroups** with adequate sample sizes
+4. Make **population-representative** inferences through survey weighting
+
+**Limitations to keep in mind:**
+
+- Self-reported data (recall bias, social desirability bias)
+- Excludes institutionalized populations and those without phones
+- Variable names and coding **change across years** — careful harmonization required
+- Response rates have declined over time (~50% in recent years)
+
+---
+
+## The CDC Definition of Binge Drinking
+
+The CDC defines **binge drinking** as a pattern of drinking that brings blood alcohol concentration (BAC) to 0.08 g/dL or higher. In practice, this corresponds to consuming:
+
+- **5 or more drinks** within about 2 hours for **men**
+- **4 or more drinks** within about 2 hours for **women**
+
+BRFSS captures this through two approaches:
+
+**Approach 1 — CDC calculated flag (`_RFBING5`/`_RFBING6`):**
+A derived binary variable the CDC computes from raw responses. Values: `1 = No`, `2 = Yes` (note the reverse coding!).
+
+**Approach 2 — Raw episodes (`DRNK3GE5`):**
+"During the past 30 days, how many times did you have 5 or more drinks on an occasion?" (The threshold is 5 for everyone — sex-specific adjustment happens in the CDC flag derivation.)
+
+In this analysis, **we prefer the CDC flag** (`_RFBING5`) and fall back to episode counts only when the flag is unavailable.
+
+```{r binge-def-quiz}
+quiz(
+  question(
+    "For a woman, how many drinks within ~2 hours qualifies as binge drinking by CDC definition?",
+    answer("3 or more"),
+    answer("4 or more", correct = TRUE),
+    answer("5 or more"),
+    answer("6 or more"),
+    allow_retry = TRUE
+  ),
+  question(
+    "In the BRFSS _RFBING5 variable, what does the value '2' mean?",
+    answer("No binge drinking"),
+    answer("Yes, binge drinking", correct = TRUE),
+    answer("Missing / unknown"),
+    answer("Refused to answer"),
+    allow_retry = TRUE,
+    random_answer_order = TRUE
+  )
+)
+```
+
+---
+
+## BRFSS Survey Design Basics
+
+BRFSS uses a **stratified cluster sampling** design. Understanding this is critical — **you cannot use simple R functions like `mean()` or `lm()` on BRFSS data without accounting for the survey design.** Doing so produces incorrect standard errors and biased estimates.
+
+**Three components define the survey design:**
+
+### 1. Survey Weights (`_LLCPWT`)
+Each respondent is assigned a weight that represents how many people in the population they "stand for." Weights account for:
+
+- Unequal probability of selection (e.g., households with only cell phones)
+- Nonresponse adjustment
+- Post-stratification to census demographics (age, sex, race/ethnicity)
+
+### 2. Strata (`_STSTR`)
+BRFSS divides each state into geographic strata (usually urban/rural sub-regions). Sampling happens within strata to ensure geographic coverage.
+
+### 3. Primary Sampling Units — PSUs (`_PSU`)
+Within each stratum, telephone numbers are grouped into clusters (PSUs). PSUs are the primary unit of selection.
+
+**The `survey` package in R** handles all of this correctly. You specify the design once, then use survey-aware versions of common functions.
+
+```{r survey-design-quiz}
+quiz(
+  question(
+    "Which R function should you use to compute a mean from BRFSS data?",
+    answer("mean()", message = "This ignores survey weights and complex design — it gives wrong answers."),
+    answer("svymean()", correct = TRUE, message = "Correct! svymean() uses the survey design to produce properly weighted and variance-corrected estimates."),
+    answer("weighted.mean()", message = "weighted.mean() handles weights but not the complex variance from clustering and stratification."),
+    answer("summarise() with wt = weight", message = "This handles weights but not clustering — standard errors will be wrong."),
+    allow_retry = TRUE
+  )
+)
+```
+
+---
+
+## Overview of the Analysis
+
+This course walks through a 14-year trend analysis of binge drinking in the U.S.:
+
+**Study population:** U.S. adults aged 18+ in all 50 states and D.C.
+
+**Time period:** 2011–2024
+
+**Primary outcome:** Any binge drinking (CDC-defined binary flag)
+
+**Secondary outcomes:**
+- Binge drinking among current drinkers only
+- High-intensity binge drinking (≥8 drinks for women, ≥10 for men)
+- Binge episode frequency categories
+
+**Key analyses:**
+1. Overall age-adjusted prevalence by year (trend)
+2. Prevalence stratified by sex, race/ethnicity, education, income
+3. State-level estimates and rankings
+4. Adjusted Prevalence Ratio (PR) regression models
+5. Race × Time and Sex × Time interaction tests
+
+**Data flow:**
+
+```
+Raw XPT files (2011–2024)
+        ↓
+  Load & audit variable availability
+        ↓
+  Harmonize variable names across years
+        ↓
+  Recode outcomes & covariates
+        ↓
+  Build complex survey design objects
+        ↓
+  Age-standardize (Year-2000 standard)
+        ↓
+  Compute prevalence estimates + CIs
+        ↓
+  Regression models
+        ↓
+  Export tables + figures
+```
+
+---
+
+## R Package Overview
+
+The analysis relies on these core packages:
+
+```{r packages, exercise=TRUE}
+# Run this to see which packages we'll use
+pkgs <- c(
+  "tidyverse",  # data manipulation + ggplot2
+  "haven",      # read SAS XPT files
+  "janitor",    # clean variable names
+  "survey",     # complex survey methods
+  "srvyr",      # tidyverse-style survey interface
+  "scales",     # axis formatting in ggplot2
+  "purrr"       # functional programming (map/map_dfr)
+)
+
+# Check which are installed
+installed <- pkgs %in% rownames(installed.packages())
+data.frame(
+  package   = pkgs,
+  installed = installed,
+  role      = c(
+    "Data manipulation + visualization",
+    "Read SAS XPT files",
+    "Clean column names",
+    "Complex survey estimation",
+    "Tidyverse-style survey API",
+    "ggplot2 axis labels",
+    "Functional iteration"
+  )
+)
+```
+
+---
+
+## Key Option: Lonely PSUs
+
+Before running any survey analysis, set this option:
+
+```{r lonely-psu, exercise=TRUE}
+# This handles strata where only one PSU was sampled
+# (common at the edges of the BRFSS sample)
+options(survey.lonely.psu = "adjust")
+
+# What it does:
+cat("survey.lonely.psu = 'adjust'\n")
+cat("When a stratum has only one PSU, its contribution to variance\n")
+cat("is computed using the overall mean — rather than causing an error.\n")
+cat("This is the recommended approach for BRFSS.\n")
+```
+
+```{r lonely-psu-quiz}
+quiz(
+  question(
+    "Why do we set options(survey.lonely.psu = 'adjust') at the start of a BRFSS analysis?",
+    answer("To speed up computation"),
+    answer("To prevent errors when a stratum has only one sampled PSU", correct = TRUE),
+    answer("To enable parallel processing"),
+    answer("To suppress missing value warnings"),
+    allow_retry = TRUE
+  )
+)
+```
+
+---
+
+## Module Summary
+
+You have learned:
+
+- **BRFSS** is a nationally representative annual telephone survey of U.S. adults, covering all 50 states + D.C.
+- **Binge drinking** is defined as ≥5 drinks (men) or ≥4 drinks (women) in ~2 hours
+- BRFSS uses a **stratified cluster design** requiring the `survey` package for valid inference
+- The three design components are: **weights** (`_LLCPWT`), **strata** (`_STSTR`), and **PSUs** (`_PSU`)
+- Variable names and coding **change across survey years** — harmonization is essential
+
+**Next:** Module 2 covers how to load BRFSS XPT files and audit variable availability across years.

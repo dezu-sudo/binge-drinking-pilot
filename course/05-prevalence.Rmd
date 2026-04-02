@@ -1,0 +1,357 @@
+---
+title: "Module 5: Computing Prevalence Estimates and Confidence Intervals"
+output:
+  learnr::tutorial:
+    progressive: true
+    allow_skip: true
+    theme: "flatly"
+runtime: shiny_prerendered
+description: "Use svymean() and svyby() to compute survey-weighted prevalence estimates with confidence intervals."
+---
+
+```{r setup, include=FALSE}
+library(learnr)
+library(tidyverse)
+library(survey)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+tutorial_options(exercise.timelimit = 120)
+options(survey.lonely.psu = "adjust")
+
+source("synthetic_brfss.R", local = TRUE)
+
+df_all <- make_synthetic_brfss(n_per_year = 1500, years = 2011:2024) |>
+  dplyr::mutate(
+    any_binge_cdc = dplyr::case_when(
+      rfbing5 == 2 ~ 1L, rfbing5 == 1 ~ 0L, TRUE ~ NA_integer_
+    ),
+    sex_f = factor(sex, levels = c(2, 1), labels = c("Female", "Male")),
+    age_group = dplyr::case_when(
+      age5 == 1 ~ "18-24", age5 == 2 ~ "25-29", age5 == 3 ~ "30-34",
+      age5 == 4 ~ "35-39", age5 == 5 ~ "40-44", age5 == 6 ~ "45-49",
+      age5 == 7 ~ "50-54", age5 == 8 ~ "55-59", age5 == 9 ~ "60-64",
+      age5 %in% 10:13 ~ "65+", TRUE ~ NA_character_
+    ) |> factor(levels = c("18-24","25-29","30-34","35-39","40-44",
+                            "45-49","50-54","55-59","60-64","65+"), ordered = TRUE),
+    age7 = dplyr::case_when(
+      age5 %in% 1:2 ~ "18-29", age5 %in% 3:4 ~ "30-39",
+      age5 %in% 5:6 ~ "40-49", age5 %in% 7:8 ~ "50-59",
+      age5 %in% 9:10 ~ "60-69", age5 %in% 11:12 ~ "70-79",
+      age5 == 13 ~ "80+", TRUE ~ NA_character_
+    ) |> factor(levels = c("18-29","30-39","40-49","50-59","60-69","70-79","80+")),
+    educ4 = dplyr::recode(as.integer(educag),
+      `1`="<HS", `2`="HS/GED", `3`="Some college/AA", `4`="College",
+      .default = NA_character_
+    ) |> factor(levels = c("<HS","HS/GED","Some college/AA","College"), ordered = TRUE),
+    strata_id = as.integer(interaction(year, strata, drop = TRUE)),
+    psu_id    = as.integer(interaction(year, psu,    drop = TRUE)),
+    is_current = dplyr::case_when(
+      alcday5 %in% c(777, 999) ~ NA, alcday5 == 888 ~ FALSE, TRUE ~ TRUE
+    )
+  ) |>
+  dplyr::filter(!is.na(sex_f), !is.na(age_group))
+
+des_all <- survey::svydesign(
+  id = ~psu_id, strata = ~strata_id, weights = ~wt, data = df_all, nest = TRUE
+)
+des_curr <- subset(des_all, is_current == TRUE)
+```
+
+## `svymean()`: Overall Prevalence
+
+`svymean()` computes a weighted mean from a survey design. For a binary outcome (0/1), this gives **prevalence**.
+
+```{r svymean-basic, exercise=TRUE}
+# Overall binge drinking prevalence — all years pooled
+overall <- survey::svymean(~any_binge_cdc, des_all, na.rm = TRUE)
+
+cat("Prevalence estimate:", round(coef(overall) * 100, 1), "%\n")
+cat("Standard error:     ", round(SE(overall) * 100, 2), "pp\n")
+
+# 95% confidence interval
+ci <- confint(overall)
+cat("95% CI:             ", round(ci[1] * 100, 1), "–", round(ci[2] * 100, 1), "%\n")
+```
+
+### Formatting Results
+
+```{r format-helpers, exercise=TRUE}
+# Formatting helpers used throughout the analysis
+fmt_pct1 <- function(x) sprintf("%.1f", x * 100)
+fmt_ci1  <- function(p, l, u) sprintf("%.1f (%.1f-%.1f)", p * 100, l * 100, u * 100)
+
+overall <- survey::svymean(~any_binge_cdc, des_all, na.rm = TRUE)
+ci      <- confint(overall)
+p       <- coef(overall)[1]
+l       <- ci[1, 1]
+u       <- ci[1, 2]
+
+cat("Formatted: ", fmt_ci1(p, l, u), "%\n")
+```
+
+---
+
+## `svyby()`: Stratified Estimates
+
+`svyby()` computes estimates within subgroups. It's the workhorse for demographic stratification.
+
+```{r svyby-sex, exercise=TRUE}
+# Prevalence by sex
+prev_sex <- survey::svyby(
+  ~any_binge_cdc,    # outcome formula
+  ~sex_f,            # subgroup formula
+  des_all,           # design object
+  survey::svymean,   # statistic function
+  na.rm = TRUE,
+  vartype = "ci"     # return CI instead of SE
+)
+
+prev_sex |>
+  tibble::as_tibble() |>
+  dplyr::transmute(
+    sex       = sex_f,
+    prev_pct  = round(any_binge_cdc * 100, 1),
+    lcl_pct   = round(ci_l * 100, 1),
+    ucl_pct   = round(ci_u * 100, 1),
+    ci_fmt    = sprintf("%.1f (%.1f-%.1f)", prev_pct, lcl_pct, ucl_pct)
+  )
+```
+
+```{r svyby-age, exercise=TRUE}
+# Prevalence by age group
+prev_age <- survey::svyby(
+  ~any_binge_cdc, ~age_group, des_all, survey::svymean,
+  na.rm = TRUE, vartype = "ci"
+)
+
+prev_age |>
+  tibble::as_tibble() |>
+  dplyr::transmute(
+    age_group = age_group,
+    prev_pct  = round(any_binge_cdc * 100, 1),
+    lcl_pct   = round(ci_l * 100, 1),
+    ucl_pct   = round(ci_u * 100, 1)
+  ) |>
+  print()
+```
+
+---
+
+## Annual Trend: Looping Over Years
+
+For trend analysis, we compute the estimate separately for each year using `purrr::map_dfr()`:
+
+```{r annual-trend, exercise=TRUE}
+# Annual prevalence — looped by year
+prev_by_year <- purrr::map_dfr(2011:2024, function(yr) {
+  # Filter to this year and rebuild design
+  df_yr  <- des_all$variables |> dplyr::filter(year == yr)
+  des_yr <- survey::svydesign(
+    id = ~psu_id, strata = ~strata_id, weights = ~wt,
+    data = df_yr, nest = TRUE
+  )
+
+  out <- survey::svymean(~any_binge_cdc, des_yr, na.rm = TRUE)
+  ci  <- suppressWarnings(confint(out))
+
+  tibble::tibble(
+    year = as.integer(yr),
+    est  = as.numeric(out)[1],
+    lcl  = ci[1, 1],
+    ucl  = ci[1, 2]
+  )
+}) |>
+  dplyr::arrange(year)
+
+# Display results
+prev_by_year |>
+  dplyr::mutate(
+    est_pct = round(est * 100, 1),
+    ci = sprintf("%.1f (%.1f-%.1f)", est_pct, lcl * 100, ucl * 100)
+  ) |>
+  dplyr::select(year, ci) |>
+  print()
+```
+
+---
+
+## Exercise: Stratified Annual Trend
+
+```{r annual-by-sex, exercise=TRUE}
+# Compute annual prevalence by sex
+prev_sex_byyear <- purrr::map_dfr(2011:2024, function(yr) {
+  df_yr  <- des_all$variables |> dplyr::filter(year == yr)
+  des_yr <- survey::svydesign(
+    id = ~psu_id, strata = ~strata_id, weights = ~wt,
+    data = df_yr, nest = TRUE
+  )
+
+  survey::svyby(
+    ~any_binge_cdc, ~sex_f, des_yr, survey::svymean,
+    na.rm = TRUE, vartype = "ci"
+  ) |>
+    tibble::as_tibble() |>
+    dplyr::mutate(year = yr)
+}) |>
+  dplyr::transmute(
+    sex  = as.character(sex_f),
+    year = as.integer(year),
+    est  = any_binge_cdc,
+    lcl  = ci_l,
+    ucl  = ci_u
+  ) |>
+  dplyr::arrange(sex, year)
+
+# Show first 10 rows
+head(prev_sex_byyear, 10)
+```
+
+---
+
+## Adjacent-Year Differences
+
+Adjacent-year differences test whether prevalence changed significantly from one year to the next. We compute the difference and its standard error using the delta method:
+
+```{r adjacent-diffs}
+# Compute adjacent-year differences with SE
+compute_adjacent_diffs <- function(df_prev) {
+  df_prev |>
+    dplyr::arrange(year) |>
+    dplyr::mutate(
+      prev_est = dplyr::lag(est),
+      prev_lcl = dplyr::lag(lcl),
+      prev_ucl = dplyr::lag(ucl),
+      delta_pp = (est - prev_est) * 100,
+      # Approximate SE from CI width (conservative)
+      se_curr  = (ucl - lcl) / (2 * 1.96),
+      se_prev  = (dplyr::lag(ucl) - dplyr::lag(lcl)) / (2 * 1.96),
+      se_delta = sqrt(se_curr^2 + se_prev^2),
+      z        = (est - prev_est) / se_delta,
+      p_value  = 2 * (1 - pnorm(abs(z)))
+    ) |>
+    dplyr::filter(!is.na(prev_est))
+}
+```
+
+```{r adjacent-diffs-exercise, exercise=TRUE}
+prev_by_year <- purrr::map_dfr(2011:2024, function(yr) {
+  df_yr  <- des_all$variables |> dplyr::filter(year == yr)
+  des_yr <- survey::svydesign(
+    id = ~psu_id, strata = ~strata_id, weights = ~wt,
+    data = df_yr, nest = TRUE
+  )
+  out <- survey::svymean(~any_binge_cdc, des_yr, na.rm = TRUE)
+  ci  <- suppressWarnings(confint(out))
+  tibble::tibble(year = as.integer(yr), est = as.numeric(out)[1],
+                 lcl = ci[1,1], ucl = ci[1,2])
+}) |> dplyr::arrange(year)
+
+diffs <- compute_adjacent_diffs(prev_by_year)
+
+diffs |>
+  dplyr::transmute(
+    years     = paste0(year - 1, "-", year),
+    delta_pp  = round(delta_pp, 2),
+    p_value   = round(p_value, 3),
+    sig       = dplyr::case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ ""
+    )
+  ) |>
+  print()
+```
+
+---
+
+## Multiple Comparisons: Benjamini-Hochberg Correction
+
+When testing many adjacent-year differences simultaneously, we apply the **Benjamini-Hochberg (BH) false discovery rate** correction to control for multiple comparisons.
+
+```{r bh-correction, exercise=TRUE}
+prev_by_year <- purrr::map_dfr(2011:2024, function(yr) {
+  df_yr  <- des_all$variables |> dplyr::filter(year == yr)
+  des_yr <- survey::svydesign(
+    id = ~psu_id, strata = ~strata_id, weights = ~wt,
+    data = df_yr, nest = TRUE
+  )
+  out <- survey::svymean(~any_binge_cdc, des_yr, na.rm = TRUE)
+  ci  <- suppressWarnings(confint(out))
+  tibble::tibble(year = as.integer(yr), est = as.numeric(out)[1],
+                 lcl = ci[1,1], ucl = ci[1,2])
+}) |> dplyr::arrange(year)
+
+diffs <- compute_adjacent_diffs(prev_by_year) |>
+  dplyr::mutate(
+    p_adj_bh = p.adjust(p_value, method = "BH"),
+    sig_bh   = dplyr::case_when(
+      p_adj_bh < 0.05 ~ "*",
+      TRUE            ~ ""
+    )
+  )
+
+diffs |>
+  dplyr::transmute(
+    years     = paste0(year - 1, "-", year),
+    delta_pp  = round(delta_pp, 2),
+    p_raw     = round(p_value, 3),
+    p_adj_bh  = round(p_adj_bh, 3),
+    sig_bh
+  ) |>
+  print()
+```
+
+```{r bh-quiz}
+quiz(
+  question(
+    "Why use Benjamini-Hochberg correction rather than Bonferroni when testing 13 adjacent-year differences?",
+    answer("BH is always more powerful than Bonferroni"),
+    answer("Bonferroni controls the family-wise error rate (very conservative); BH controls the false discovery rate, which is more appropriate when many tests are expected to be true positives", correct = TRUE),
+    answer("BH is the only method available in base R"),
+    answer("The tests are independent, so BH is required"),
+    allow_retry = TRUE
+  )
+)
+```
+
+---
+
+## Exporting Results
+
+Results are exported in two formats: proportions (0–1) and percentages (0–100).
+
+```{r export-pattern, eval=FALSE}
+# Export proportions (for programmatic use)
+readr::write_csv(
+  prev_by_year,
+  file.path(tab_dir, "main_prev_any_binge_alladults_CI_prop.csv")
+)
+
+# Export percentages (human-readable)
+readr::write_csv(
+  prev_by_year |>
+    dplyr::mutate(
+      est = est * 100,
+      lcl = lcl * 100,
+      ucl = ucl * 100,
+      ci  = sprintf("%.1f (%.1f-%.1f)", est, lcl, ucl)
+    ),
+  file.path(tab_dir, "main_prev_any_binge_alladults_CI_pct.csv")
+)
+```
+
+The `ci` column bundles the estimate and CI into a single publication-ready string like `"18.2 (17.9-18.5)"`.
+
+---
+
+## Module Summary
+
+You have learned:
+
+- `svymean()` computes a weighted prevalence with correct survey-design standard errors
+- `svyby()` computes estimates within subgroups (sex, age, race, education)
+- For trend analysis, **loop over years** building a fresh design for each year
+- `p.adjust(method = "BH")` applies Benjamini-Hochberg correction for multiple adjacent-year comparisons
+- Export results as both proportions (for computation) and percentages (for publication)
+
+**Next:** Module 6 covers age standardization using the Year 2000 standard population — essential for valid trend comparisons when population age structure changes over time.

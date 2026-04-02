@@ -1,0 +1,338 @@
+---
+title: "Module 4: Complex Survey Design in R"
+output:
+  learnr::tutorial:
+    progressive: true
+    allow_skip: true
+    theme: "flatly"
+runtime: shiny_prerendered
+description: "Build correct survey design objects using the survey package and understand why it matters."
+---
+
+```{r setup, include=FALSE}
+library(learnr)
+library(tidyverse)
+library(survey)
+library(srvyr)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+tutorial_options(exercise.timelimit = 90)
+options(survey.lonely.psu = "adjust")
+
+source("synthetic_brfss.R", local = TRUE)
+
+# Pre-build recoded data for exercises
+df_raw <- make_synthetic_brfss(n_per_year = 2000, years = 2011:2024)
+
+df_all <- df_raw |>
+  dplyr::mutate(
+    any_binge_cdc = dplyr::case_when(
+      rfbing5 == 2 ~ 1L, rfbing5 == 1 ~ 0L, TRUE ~ NA_integer_
+    ),
+    sex_f = factor(sex, levels = c(2, 1), labels = c("Female", "Male")),
+    age_group = dplyr::case_when(
+      age5 == 1 ~ "18-24", age5 == 2 ~ "25-29", age5 == 3 ~ "30-34",
+      age5 == 4 ~ "35-39", age5 == 5 ~ "40-44", age5 == 6 ~ "45-49",
+      age5 == 7 ~ "50-54", age5 == 8 ~ "55-59", age5 == 9 ~ "60-64",
+      age5 %in% 10:13 ~ "65+", TRUE ~ NA_character_
+    ) |> factor(levels = c("18-24","25-29","30-34","35-39","40-44",
+                            "45-49","50-54","55-59","60-64","65+"), ordered = TRUE),
+    age7 = dplyr::case_when(
+      age5 %in% 1:2 ~ "18-29", age5 %in% 3:4 ~ "30-39",
+      age5 %in% 5:6 ~ "40-49", age5 %in% 7:8 ~ "50-59",
+      age5 %in% 9:10 ~ "60-69", age5 %in% 11:12 ~ "70-79",
+      age5 == 13 ~ "80+", TRUE ~ NA_character_
+    ) |> factor(levels = c("18-29","30-39","40-49","50-59","60-69","70-79","80+")),
+    educ4 = dplyr::recode(as.integer(educag),
+      `1`="<HS", `2`="HS/GED", `3`="Some college/AA", `4`="College",
+      .default = NA_character_
+    ) |> factor(levels = c("<HS","HS/GED","Some college/AA","College"), ordered = TRUE),
+    strata_id = as.integer(interaction(year, strata, drop = TRUE)),
+    psu_id    = as.integer(interaction(year, psu,    drop = TRUE)),
+    year_lin  = as.numeric(year) - 2011,
+    is_current = dplyr::case_when(
+      alcday5 %in% c(777, 999) ~ NA,
+      alcday5 == 888 ~ FALSE,
+      TRUE ~ TRUE
+    )
+  ) |>
+  dplyr::filter(!is.na(sex_f), !is.na(age_group))
+
+des_all <- survey::svydesign(
+  id      = ~psu_id,
+  strata  = ~strata_id,
+  weights = ~wt,
+  data    = df_all,
+  nest    = TRUE
+)
+```
+
+## Why Simple Statistics Are Wrong for BRFSS
+
+The most common mistake when analyzing survey data is using unweighted statistics or ignoring the complex design.
+
+**Let's see the effect directly:**
+
+```{r wrong-vs-right, exercise=TRUE}
+# Compare: wrong (ignores design) vs. correct (survey-weighted)
+df_year <- df_all |> dplyr::filter(year == 2019)
+
+# WRONG: simple unweighted mean
+wrong_mean <- mean(df_year$any_binge_cdc, na.rm = TRUE)
+
+# WRONG: weighted mean (correct point estimate but wrong variance)
+wrong_weighted <- weighted.mean(df_year$any_binge_cdc, df_year$wt, na.rm = TRUE)
+
+# CORRECT: survey design
+des_yr <- survey::svydesign(
+  id      = ~psu_id,
+  strata  = ~strata_id,
+  weights = ~wt,
+  data    = df_year,
+  nest    = TRUE
+)
+correct_est <- survey::svymean(~any_binge_cdc, des_yr, na.rm = TRUE)
+
+cat("Unweighted mean:     ", round(wrong_mean, 4), "\n")
+cat("Weighted mean:       ", round(wrong_weighted, 4), "\n")
+cat("Survey estimate:     ", round(coef(correct_est), 4), "\n")
+cat("Survey SE:           ", round(SE(correct_est), 4), "\n\n")
+cat("Note: weighted.mean() gets the point estimate right but the SE is wrong.\n")
+cat("Only svymean() uses the correct variance formula accounting for clustering.\n")
+```
+
+---
+
+## Building a Survey Design Object
+
+The core function is `survey::svydesign()`. You must specify:
+
+```r
+des <- survey::svydesign(
+  id      = ~psu_id,      # PSU (cluster identifier)
+  strata  = ~strata_id,   # Stratum identifier
+  weights = ~wt,          # Survey weight
+  data    = df,
+  nest    = TRUE          # PSU IDs are nested within strata (not globally unique)
+)
+```
+
+**The `nest = TRUE` argument is critical.** BRFSS PSU identifiers may repeat across strata (PSU "1" in stratum A is different from PSU "1" in stratum B). Setting `nest = TRUE` tells the `survey` package to treat PSU IDs as nested within strata.
+
+---
+
+## Pooling Years: Making Strata/PSUs Unique
+
+When pooling multiple years, each year's strata and PSU IDs must be made globally unique. Otherwise, stratum "1" from 2011 would be treated as the same as stratum "1" from 2019.
+
+```{r pooling-strata, exercise=TRUE}
+# Wrong: PSU/strata IDs repeat across years
+df_year_check <- df_all |>
+  dplyr::group_by(year) |>
+  dplyr::summarise(
+    n_unique_strata = dplyr::n_distinct(strata),
+    n_unique_psu    = dplyr::n_distinct(psu),
+    .groups = "drop"
+  )
+print(df_year_check)
+```
+
+```{r make-unique-strata, exercise=TRUE}
+# Correct: create year-specific strata and PSU IDs
+df_pooled <- df_all |>
+  dplyr::mutate(
+    strata_id = as.integer(interaction(year, strata, drop = TRUE)),
+    psu_id    = as.integer(interaction(year, psu,    drop = TRUE))
+  )
+
+# Now strata IDs are unique across years
+df_pooled |>
+  dplyr::group_by(year) |>
+  dplyr::summarise(
+    n_unique_strata = dplyr::n_distinct(strata_id),
+    .groups = "drop"
+  )
+```
+
+---
+
+## Exercise: Build the Pooled Design
+
+```{r build-design, exercise=TRUE}
+options(survey.lonely.psu = "adjust")
+
+# Build the pooled survey design object
+des_all <- survey::svydesign(
+  id      = ~psu_id,
+  strata  = ~strata_id,
+  weights = ~wt,
+  data    = df_all,    # already has year-specific strata_id and psu_id
+  nest    = TRUE
+)
+
+# Inspect the design object
+summary(des_all)
+```
+
+```{r design-structure, exercise=TRUE}
+options(survey.lonely.psu = "adjust")
+des_all <- survey::svydesign(
+  id = ~psu_id, strata = ~strata_id, weights = ~wt,
+  data = df_all, nest = TRUE
+)
+
+cat("Class:", class(des_all), "\n")
+cat("Number of observations:", nrow(des_all$variables), "\n")
+cat("Number of strata:", dplyr::n_distinct(des_all$variables$strata_id), "\n")
+cat("Number of PSUs:", dplyr::n_distinct(des_all$variables$psu_id), "\n")
+cat("Weight range:", round(range(weights(des_all))), "\n")
+```
+
+---
+
+## Updating the Design with New Variables
+
+After building the design, you can add derived variables using `stats::update()`. This is preferable to rebuilding the design from scratch — it keeps the design and data in sync.
+
+```{r update-design, exercise=TRUE}
+options(survey.lonely.psu = "adjust")
+des_all <- survey::svydesign(
+  id = ~psu_id, strata = ~strata_id, weights = ~wt,
+  data = df_all, nest = TRUE
+)
+
+# Add derived variables to the design
+des_all <- stats::update(
+  des_all,
+  year_lin  = as.numeric(year) - 2011,      # centered time variable
+  is_current = dplyr::case_when(
+    alcday5 %in% c(777, 999) ~ NA,
+    alcday5 == 888 ~ FALSE,
+    TRUE ~ TRUE
+  ),
+  any_binge_f = factor(any_binge_cdc, levels = c(0, 1), labels = c("No", "Yes"))
+)
+
+# Verify the new variables are in the design
+cat("New variables available:\n")
+cat("  year_lin range:", range(des_all$variables$year_lin), "\n")
+cat("  is_current distribution:\n")
+print(table(des_all$variables$is_current, useNA = "ifany"))
+```
+
+---
+
+## Creating Subsets
+
+To analyze current drinkers separately, use `subset()` on the design object — never subset the data frame before building the design.
+
+```{r subset-design, exercise=TRUE}
+options(survey.lonely.psu = "adjust")
+des_all <- survey::svydesign(
+  id = ~psu_id, strata = ~strata_id, weights = ~wt,
+  data = df_all, nest = TRUE
+)
+des_all <- stats::update(des_all,
+  is_current = dplyr::case_when(
+    alcday5 %in% c(777, 999) ~ NA, alcday5 == 888 ~ FALSE, TRUE ~ TRUE
+  )
+)
+
+# Subset to current drinkers
+des_curr <- subset(des_all, is_current)
+
+cat("All adults design - N:", nrow(des_all$variables), "\n")
+cat("Current drinkers design - N:", nrow(des_curr$variables), "\n")
+cat("Proportion current drinkers: ",
+    round(nrow(des_curr$variables) / nrow(des_all$variables), 3), "\n")
+```
+
+```{r subset-quiz}
+quiz(
+  question(
+    "Why do we use subset() on the design object rather than filtering the data frame before building the design?",
+    answer("It is faster"),
+    answer("Subsetting the design object preserves the correct variance estimation, accounting for the fact that non-selected observations still affect the design structure", correct = TRUE),
+    answer("subset() is the only function that works with svydesign objects"),
+    answer("It produces the same result either way"),
+    allow_retry = TRUE
+  )
+)
+```
+
+---
+
+## The srvyr Package: Tidyverse-Style Surveys
+
+The `srvyr` package wraps `survey` with a dplyr-like interface. This can be cleaner for simple summaries:
+
+```{r srvyr-demo, exercise=TRUE}
+library(srvyr)
+options(survey.lonely.psu = "adjust")
+
+des_all <- survey::svydesign(
+  id = ~psu_id, strata = ~strata_id, weights = ~wt,
+  data = df_all, nest = TRUE
+)
+
+# Tidyverse-style survey summary
+as_survey_design(des_all) |>
+  dplyr::filter(!is.na(any_binge_cdc)) |>
+  dplyr::group_by(year) |>
+  dplyr::summarise(
+    prev = survey_mean(any_binge_cdc, vartype = "ci", na.rm = TRUE)
+  ) |>
+  dplyr::slice_head(n = 6)
+```
+
+For this analysis, we use the base `survey` package directly for maximum control over variance estimation and standardization.
+
+---
+
+## Year-Specific Designs for Trend Analysis
+
+For age-standardized trend analysis, we loop over years and build individual year designs. This is necessary because `svystandardize()` only works on a single design at a time.
+
+```{r year-loop-design, exercise=TRUE}
+options(survey.lonely.psu = "adjust")
+
+# Pattern for year-specific design (used inside map_dfr loops)
+build_year_design <- function(df_pooled, yr) {
+  df_yr <- df_pooled |> dplyr::filter(year == yr, !is.na(age7))
+
+  survey::svydesign(
+    id      = ~psu_id,
+    strata  = ~strata_id,
+    weights = ~wt,
+    data    = df_yr,
+    nest    = TRUE
+  )
+}
+
+# Build designs for two years
+des_2018 <- build_year_design(df_all, 2018)
+des_2022 <- build_year_design(df_all, 2022)
+
+cat("2018 design N:", nrow(des_2018$variables), "\n")
+cat("2022 design N:", nrow(des_2022$variables), "\n")
+
+# Quick unweighted check on binge prevalence (not for publication!)
+cat("\nRaw binge proportions (unweighted check):\n")
+cat("  2018:", round(mean(des_2018$variables$any_binge_cdc, na.rm = TRUE), 3), "\n")
+cat("  2022:", round(mean(des_2022$variables$any_binge_cdc, na.rm = TRUE), 3), "\n")
+```
+
+---
+
+## Module Summary
+
+You have learned:
+
+- Using `mean()` or `lm()` directly on BRFSS data gives **wrong standard errors** — always use `survey::svymean()` and related functions
+- `svydesign()` requires three components: **PSUs** (`id`), **strata** (`strata`), and **weights** (`weights`)
+- `nest = TRUE` is required because BRFSS PSU IDs repeat across strata
+- When pooling years, create **year-specific strata and PSU IDs** using `interaction(year, strata)`
+- Use `stats::update()` to add derived variables to an existing design
+- Use `subset()` on the design (not the data) to create subgroup designs
+- Year-specific design objects are needed for age standardization
+
+**Next:** Module 5 covers computing prevalence estimates and confidence intervals with the survey package.

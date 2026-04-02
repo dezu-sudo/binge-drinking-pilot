@@ -1,0 +1,436 @@
+---
+title: "Module 3: Data Harmonization Across Years"
+output:
+  learnr::tutorial:
+    progressive: true
+    allow_skip: true
+    theme: "flatly"
+runtime: shiny_prerendered
+description: "Recode raw BRFSS variables into consistent, analysis-ready categories across 2011–2024."
+---
+
+```{r setup, include=FALSE}
+library(learnr)
+library(tidyverse)
+library(janitor)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+tutorial_options(exercise.timelimit = 60)
+
+source("synthetic_brfss.R", local = TRUE)
+df_raw <- make_synthetic_brfss(n_per_year = 1000, years = 2011:2024)
+
+# Helper for exercises
+as_int <- function(x) suppressWarnings(as.integer(as.character(x)))
+```
+
+## Why Harmonization is Necessary
+
+Even after resolving variable *names*, the variable *values* often change across BRFSS years:
+
+- **Income:** early years used `INCOME2` (8 categories), later years added `INCOME3` (11 categories)
+- **Race/ethnicity:** multiple source variables with overlapping and changing codes
+- **Sex:** response options expanded; older "male/female" coding differs from newer versions
+- **Alcohol variables:** `ALCDAY5` (days/week or days/month) was renamed `ALCDAY4` in 2020
+
+The goal of harmonization is to create a **single consistent set of analysis variables** that works across all years, using a hierarchical fallback strategy where preferred variables are not available.
+
+---
+
+## Outcome Variable: Any Binge Drinking
+
+The primary outcome requires two approaches:
+
+**Approach 1 (preferred):** The CDC pre-computed flag `_RFBING5` / `_RFBING6`
+- Values: `1 = No binge drinking`, `2 = Yes binge drinking`
+- Note the **reverse coding** — 1 = No, 2 = Yes
+
+**Approach 2 (fallback):** Derived from binge episode count `DRNK3GE5`
+- Values: `0–76 = number of episodes`, `88 = zero times`, `77/99 = DK/Refused`
+
+```{r binge-outcome-def}
+alcday5_to_days30 <- function(x) {
+  xi <- suppressWarnings(as.integer(as.character(x)))
+  ifelse(is.na(xi), NA_real_,
+    ifelse(xi == 888L, 0,
+      ifelse(xi >= 101L & xi <= 107L, (xi - 100) * 4.3,   # days/week × ~4.3
+        ifelse(xi >= 201L & xi <= 231L, (xi - 200),        # days/month
+          NA_real_))))
+}
+
+recode_binge_outcome <- function(d) {
+  d |>
+    dplyr::mutate(
+      # Step 1: clean binge episode count
+      binge_episodes_clean = dplyr::case_when(
+        !is.na(drnk3ge5) & drnk3ge5 %in% 1:76  ~ as.integer(drnk3ge5),  # actual count
+        !is.na(drnk3ge5) & drnk3ge5 == 88       ~ 0L,                   # "none"
+        !is.na(drnk3ge5) & drnk3ge5 %in% c(77, 99) ~ NA_integer_,       # DK/Refused
+        TRUE ~ NA_integer_
+      ),
+
+      # Step 2: fill zero from alcday5 if episode still missing
+      binge_episodes = dplyr::case_when(
+        !is.na(binge_episodes_clean)        ~ binge_episodes_clean,
+        is.na(binge_episodes_clean) & alcday5 == 888 ~ 0L,  # non-drinker
+        TRUE ~ NA_integer_
+      ),
+
+      # Step 3: primary outcome from CDC flag (reverse-coded: 1=No, 2=Yes)
+      any_binge_cdc = dplyr::case_when(
+        !is.na(rfbing5) & as.integer(rfbing5) == 2 ~ 1L,  # Yes
+        !is.na(rfbing5) & as.integer(rfbing5) == 1 ~ 0L,  # No
+        TRUE ~ NA_integer_
+      ),
+
+      # Step 4: fallback to episodes if CDC flag missing
+      any_binge_cdc = dplyr::if_else(
+        is.na(rfbing5),
+        dplyr::case_when(
+          is.na(alcday5)          ~ NA_integer_,
+          binge_episodes > 0      ~ 1L,
+          binge_episodes == 0     ~ 0L,
+          TRUE                    ~ NA_integer_
+        ),
+        any_binge_cdc
+      )
+    )
+}
+```
+
+```{r binge-outcome-quiz}
+quiz(
+  question(
+    "In the BRFSS _RFBING5 variable, what does value '1' mean?",
+    answer("Yes, respondent binge drinks"),
+    answer("No binge drinking", correct = TRUE),
+    answer("Refused to answer"),
+    answer("Don't know"),
+    allow_retry = TRUE,
+    message = "BRFSS reverse-codes this: 1 = No, 2 = Yes. Easy to miss!"
+  )
+)
+```
+
+---
+
+## Exercise: Recode Binge Outcome
+
+```{r binge-recode-exercise, exercise=TRUE}
+# Apply the binge outcome recode to synthetic data
+df_sample <- df_raw |>
+  dplyr::rename(
+    drnk3ge5 = drnk3ge5,   # already named correctly in synthetic data
+    rfbing5  = rfbing5
+  ) |>
+  dplyr::slice_head(n = 20)
+
+result <- recode_binge_outcome(df_sample)
+
+# Check distribution of any_binge_cdc
+result |>
+  dplyr::count(rfbing5, any_binge_cdc) |>
+  print()
+```
+
+```{r binge-freq-recode, exercise=TRUE}
+# Recode binge episodes into frequency categories
+recode_freq5 <- function(episodes) {
+  dplyr::case_when(
+    is.na(episodes)          ~ NA_character_,
+    episodes == 0            ~ "none (0)",
+    episodes == 1            ~ "monthly (1)",
+    episodes %in% 2:3        ~ "a few times monthly (2-3)",
+    episodes %in% 4:7        ~ "weekly (4-7)",
+    episodes >= 8            ~ ">=2x/week (>=8)"
+  )
+}
+
+df_raw |>
+  dplyr::mutate(freq5 = recode_freq5(drnk3ge5)) |>
+  dplyr::count(freq5, sort = TRUE)
+```
+
+---
+
+## Age Group Harmonization
+
+BRFSS uses `_AGEG5YR` (codes 1–13 for 5-year age bands starting at 18–24). We map these to two grouping schemes:
+
+**10-bin primary:** 18–24, 25–29, ..., 60–64, 65+
+
+**7-band (for age standardization):** 18–29, 30–39, 40–49, 50–59, 60–69, 70–79, 80+
+
+```{r age-recode-def}
+recode_age <- function(age5_col) {
+  age5 <- suppressWarnings(as.integer(as.character(age5_col)))
+  list(
+    age_group = dplyr::case_when(
+      age5 == 1            ~ "18-24",
+      age5 == 2            ~ "25-29",
+      age5 == 3            ~ "30-34",
+      age5 == 4            ~ "35-39",
+      age5 == 5            ~ "40-44",
+      age5 == 6            ~ "45-49",
+      age5 == 7            ~ "50-54",
+      age5 == 8            ~ "55-59",
+      age5 == 9            ~ "60-64",
+      age5 %in% 10:13      ~ "65+",
+      TRUE                 ~ NA_character_
+    ),
+    age7 = dplyr::case_when(
+      age5 %in% 1:2        ~ "18-29",
+      age5 %in% 3:4        ~ "30-39",
+      age5 %in% 5:6        ~ "40-49",
+      age5 %in% 7:8        ~ "50-59",
+      age5 %in% 9:10       ~ "60-69",
+      age5 %in% 11:12      ~ "70-79",
+      age5 == 13           ~ "80+",
+      TRUE                 ~ NA_character_
+    )
+  )
+}
+```
+
+```{r age-recode-exercise, exercise=TRUE}
+# Recode age groups and check distribution
+age_recoded <- recode_age(df_raw$age5)
+
+df_raw |>
+  dplyr::mutate(
+    age_group = age_recoded$age_group,
+    age7      = age_recoded$age7
+  ) |>
+  dplyr::count(age_group) |>
+  print()
+```
+
+```{r age7-exercise, exercise=TRUE}
+age_recoded <- recode_age(df_raw$age5)
+df_raw |>
+  dplyr::mutate(age7 = age_recoded$age7) |>
+  dplyr::count(age7)
+```
+
+---
+
+## Race/Ethnicity Harmonization
+
+This is the **most complex** harmonization step. BRFSS has multiple race variables that changed over time:
+
+| Variable | Years available | Description |
+|----------|----------------|-------------|
+| `_IMPRACE` | Most years | CDC-imputed race (1–6) |
+| `RACE1`/`_RACE1` | Older years | Single race, 7 categories |
+| `_MRACE1` | 2015–2016 | Multiracial with detailed breakdown |
+| `HISPANC`/`HISPANC2` | All years | Hispanic origin (separate question) |
+
+**Critical principle:** Hispanic ethnicity is asked as a **separate question** from race. We always code Hispanic origin first (regardless of race responses) per CDC/OMB standards.
+
+```{r race-recode-def}
+recode_race <- function(d) {
+  as_int_local <- function(x) suppressWarnings(as.integer(as.character(x)))
+
+  imprace_i <- as_int_local(d$imprace)
+  hisp_i    <- as_int_local(d$hispanc)
+  race1_i   <- as_int_local(d$race1)
+
+  race4 <- dplyr::case_when(
+    # HISPANIC FIRST — always from HISPANC, not IMPRACE
+    !is.na(hisp_i) & hisp_i == 1L              ~ "Hispanic",
+
+    # NH categories from _IMPRACE (preferred)
+    !is.na(imprace_i) & imprace_i == 1L        ~ "NH White",
+    !is.na(imprace_i) & imprace_i == 2L        ~ "NH Black",
+    !is.na(imprace_i) & imprace_i %in% 3:7     ~ "NH Other",
+
+    # Fallback to RACE1 when _IMPRACE is missing
+    is.na(imprace_i) & !is.na(race1_i) & race1_i == 1L ~ "NH White",
+    is.na(imprace_i) & !is.na(race1_i) & race1_i == 2L ~ "NH Black",
+    is.na(imprace_i) & !is.na(race1_i) & race1_i %in% 3:7 ~ "NH Other",
+
+    TRUE ~ NA_character_
+  )
+
+  race4
+}
+```
+
+```{r race-exercise, exercise=TRUE}
+# Apply race harmonization to synthetic data
+# Note: synthetic data uses 'imprace' column directly
+df_race <- df_raw |>
+  dplyr::mutate(
+    imprace  = imprace,          # _IMPRACE codes 1-6
+    hispanc  = NA_integer_,      # no hispanic variable in synthetic data
+    race1    = NA_integer_       # no race1 fallback in synthetic data
+  )
+
+race4_result <- recode_race(df_race)
+table(race4_result, useNA = "ifany")
+```
+
+---
+
+## Education Harmonization
+
+BRFSS has two education variables:
+- `EDUCAG` (4 categories, CDC-derived): 1=<HS, 2=HS/GED, 3=Some college/AA, 4=College
+- `EDUCA` (6 categories, raw): 1–3=grades 1–11, 4=HS grad, 5=Some college, 6=College grad
+
+We prefer `EDUCAG` and fall back to collapsing `EDUCA`:
+
+```{r educ-recode-def}
+recode_educ4 <- function(educag_col, educa_col = NULL) {
+  as_int_local <- function(x) suppressWarnings(as.integer(as.character(x)))
+
+  educag_i <- as_int_local(educag_col)
+  educa_i  <- if (!is.null(educa_col)) as_int_local(educa_col) else rep(NA_integer_, length(educag_i))
+
+  dplyr::case_when(
+    # Prefer EDUCAG (CDC 4-level)
+    !is.na(educag_i) ~ dplyr::recode(educag_i,
+      `1` = "<HS", `2` = "HS/GED",
+      `3` = "Some college/AA", `4` = "College",
+      .default = NA_character_
+    ),
+    # Fallback: collapse EDUCA (6-level) into same 4 groups
+    is.na(educag_i) & !is.na(educa_i) ~ dplyr::case_when(
+      educa_i %in% 1:3 ~ "<HS",
+      educa_i == 4     ~ "HS/GED",
+      educa_i == 5     ~ "Some college/AA",
+      educa_i == 6     ~ "College",
+      TRUE             ~ NA_character_
+    ),
+    TRUE ~ NA_character_
+  )
+}
+```
+
+```{r educ-exercise, exercise=TRUE}
+educ4_result <- recode_educ4(df_raw$educag)
+
+table(educ4_result, useNA = "ifany")
+```
+
+---
+
+## Income Harmonization
+
+Income is the trickiest harmonization due to multiple source variables with different scales:
+
+- `INCOME3` (2013+): 11 categories up to ≥$200k
+- `INCOME2` (all years): 8 categories up to ≥$75k
+- `_INCOMG` (some years): 6 categories
+
+We create **three groupings** for different analytical purposes:
+
+```{r income-recode-def}
+recode_income3 <- function(income3_col, income2_col, incomg_col = NULL) {
+  as_int_local <- function(x) suppressWarnings(as.integer(as.character(x)))
+
+  income3_i <- as_int_local(income3_col)
+  income2_i <- as_int_local(income2_col)
+  incomg_i  <- if (!is.null(incomg_col)) as_int_local(incomg_col) else rep(NA_integer_, length(income3_i))
+
+  dplyr::case_when(
+    # DK/Refused from any source
+    !is.na(income3_i) & income3_i %in% c(77, 99) ~ "Unknown",
+    !is.na(income2_i) & income2_i %in% c(77, 99) ~ "Unknown",
+
+    # Prefer INCOME3 (most granular)
+    !is.na(income3_i) & income3_i %in% 1:4  ~ "<$25k",
+    !is.na(income3_i) & income3_i %in% 5:6  ~ "$25-<50k",
+    !is.na(income3_i) & income3_i %in% 7:11 ~ ">=50k",
+
+    # Fallback to INCOME2
+    is.na(income3_i) & !is.na(income2_i) & income2_i %in% 1:4 ~ "<$25k",
+    is.na(income3_i) & !is.na(income2_i) & income2_i %in% 5:6 ~ "$25-<50k",
+    is.na(income3_i) & !is.na(income2_i) & income2_i %in% 7:8 ~ ">=50k",
+
+    # Fallback to _INCOMG
+    is.na(income3_i) & is.na(income2_i) & !is.na(incomg_i) & incomg_i %in% 1:2 ~ "<$25k",
+    is.na(income3_i) & is.na(income2_i) & !is.na(incomg_i) & incomg_i %in% 3:4 ~ "$25-<50k",
+    is.na(income3_i) & is.na(income2_i) & !is.na(incomg_i) & incomg_i %in% 5:6 ~ ">=50k",
+
+    TRUE ~ "Unknown"
+  )
+}
+```
+
+```{r income-exercise, exercise=TRUE}
+income3_result <- recode_income3(
+  income3_col = NA_integer_,   # not in synthetic data
+  income2_col = df_raw$income2
+)
+
+table(income3_result, useNA = "ifany")
+```
+
+---
+
+## Putting It Together: `recode_analysis()`
+
+In the actual analysis, all recoding is applied in a single `recode_analysis()` function. This ensures consistency and makes the pipeline reproducible.
+
+```{r recode-pipeline, exercise=TRUE}
+# Demonstrate the recoding pipeline on a small slice
+source("synthetic_brfss.R")
+df_sample <- make_synthetic_brfss(n_per_year = 200, years = 2019:2021)
+
+# Apply a simplified version of the full recode
+df_recoded <- df_sample |>
+  dplyr::mutate(
+    # Binge outcome
+    any_binge_cdc = dplyr::case_when(
+      rfbing5 == 2 ~ 1L,
+      rfbing5 == 1 ~ 0L,
+      TRUE ~ NA_integer_
+    ),
+
+    # Age groups
+    age_group = dplyr::case_when(
+      age5 == 1   ~ "18-24", age5 == 2 ~ "25-29", age5 == 3 ~ "30-34",
+      age5 == 4   ~ "35-39", age5 == 5 ~ "40-44", age5 == 6 ~ "45-49",
+      age5 == 7   ~ "50-54", age5 == 8 ~ "55-59", age5 == 9 ~ "60-64",
+      age5 %in% 10:13 ~ "65+", TRUE ~ NA_character_
+    ) |> factor(levels = c("18-24","25-29","30-34","35-39","40-44",
+                            "45-49","50-54","55-59","60-64","65+"), ordered = TRUE),
+
+    # Education
+    educ4 = dplyr::recode(as.integer(educag),
+      `1`="<HS", `2`="HS/GED", `3`="Some college/AA", `4`="College",
+      .default = NA_character_
+    ) |> factor(levels = c("<HS","HS/GED","Some college/AA","College"), ordered = TRUE),
+
+    # Sex
+    sex_f = factor(as.integer(sex), levels = c(2, 1), labels = c("Female", "Male"))
+  )
+
+cat("=== Variable summary after recoding ===\n\n")
+cat("Years:", paste(sort(unique(df_recoded$year)), collapse = ", "), "\n")
+cat("N rows:", nrow(df_recoded), "\n\n")
+
+cat("Binge outcome:\n")
+print(table(df_recoded$any_binge_cdc, useNA = "ifany"))
+
+cat("\nAge groups:\n")
+print(table(df_recoded$age_group))
+
+cat("\nEducation:\n")
+print(table(df_recoded$educ4))
+```
+
+---
+
+## Module Summary
+
+You have learned:
+
+- **Outcome coding:** The CDC binge flag is reverse-coded (1=No, 2=Yes); always use it as primary with episode-count fallback
+- **Age harmonization:** `_AGEG5YR` codes 1–13 map to 10-bin or 7-band age groups
+- **Race/ethnicity:** Hispanic identity (from separate HISPANC question) takes precedence over `_IMPRACE` race codes
+- **Education:** Prefer `EDUCAG` (4-level), fall back to collapsing `EDUCA` (6-level) into the same groups
+- **Income:** Multiple source variables across years require a 3-level fallback hierarchy
+- All recoding is centralized in `recode_analysis()` for consistency and reproducibility
+
+**Next:** Module 4 covers building proper complex survey design objects in R.

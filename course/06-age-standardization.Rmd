@@ -1,0 +1,316 @@
+---
+title: "Module 6: Age Standardization"
+output:
+  learnr::tutorial:
+    progressive: true
+    allow_skip: true
+    theme: "flatly"
+runtime: shiny_prerendered
+description: "Apply direct age standardization using the Year 2000 standard population and svystandardize()."
+---
+
+```{r setup, include=FALSE}
+library(learnr)
+library(tidyverse)
+library(survey)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+tutorial_options(exercise.timelimit = 120)
+options(survey.lonely.psu = "adjust")
+
+source("synthetic_brfss.R", local = TRUE)
+
+df_all <- make_synthetic_brfss(n_per_year = 1500, years = 2011:2024) |>
+  dplyr::mutate(
+    any_binge_cdc = dplyr::case_when(
+      rfbing5 == 2 ~ 1L, rfbing5 == 1 ~ 0L, TRUE ~ NA_integer_
+    ),
+    sex_f = factor(sex, levels = c(2, 1), labels = c("Female", "Male")),
+    age7 = dplyr::case_when(
+      age5 %in% 1:2 ~ "18-29", age5 %in% 3:4 ~ "30-39",
+      age5 %in% 5:6 ~ "40-49", age5 %in% 7:8 ~ "50-59",
+      age5 %in% 9:10 ~ "60-69", age5 %in% 11:12 ~ "70-79",
+      age5 == 13 ~ "80+", TRUE ~ NA_character_
+    ) |> factor(levels = c("18-29","30-39","40-49","50-59","60-69","70-79","80+")),
+    strata_id = as.integer(interaction(year, strata, drop = TRUE)),
+    psu_id    = as.integer(interaction(year, psu,    drop = TRUE))
+  ) |>
+  dplyr::filter(!is.na(sex_f), !is.na(age7))
+
+# Year 2000 standard population weights (7-band, adults 18+)
+std2000_5yr <- c(
+  "15-19"=72169, "20-24"=66478, "25-29"=64529, "30-34"=71044, "35-39"=80762,
+  "40-44"=81851, "45-49"=72118, "50-54"=62716, "55-59"=48454, "60-64"=38793,
+  "65-69"=34264, "70-74"=31773, "75-79"=26999, "80-84"=17842, "85+"=15508
+)
+
+g <- function(k) std2000_5yr[[k]]
+
+std_10bin_counts <- c(
+  "18-24" = 0.4*g("15-19") + g("20-24"),
+  "25-29" = g("25-29"), "30-34" = g("30-34"), "35-39" = g("35-39"),
+  "40-44" = g("40-44"), "45-49" = g("45-49"), "50-54" = g("50-54"),
+  "55-59" = g("55-59"), "60-64" = g("60-64"),
+  "65+" = g("65-69") + g("70-74") + g("75-79") + g("80-84") + g("85+")
+)
+
+w_2000_age7_counts <- c(
+  "18-29" = unname(std_10bin_counts["18-24"]) + unname(std_10bin_counts["25-29"]),
+  "30-39" = unname(std_10bin_counts["30-34"]) + unname(std_10bin_counts["35-39"]),
+  "40-49" = unname(std_10bin_counts["40-44"]) + unname(std_10bin_counts["45-49"]),
+  "50-59" = unname(std_10bin_counts["50-54"]) + unname(std_10bin_counts["55-59"]),
+  "60-69" = unname(std_10bin_counts["60-64"]) + g("65-69"),
+  "70-79" = g("70-74") + g("75-79"),
+  "80+"   = g("80-84") + g("85+")
+)
+
+w_2000_age7 <- w_2000_age7_counts / sum(w_2000_age7_counts)
+```
+
+## Why Age-Standardize?
+
+Binge drinking rates differ sharply by age. If the **age distribution of the U.S. population changes over time** (e.g., the population is aging), then crude prevalence estimates will trend downward simply because older people drink less — not because actual behavior changed.
+
+**Age standardization removes this confounding** by applying a fixed reference age distribution to all years. This lets us compare "what would prevalence be if all years had the same age structure?"
+
+**Example:**
+
+```{r why-standardize, exercise=TRUE}
+# Demonstrate the effect of age structure
+# Suppose younger age groups have higher binge rates
+# If 2011 had more young adults than 2024, crude rates would appear higher in 2011
+# even if age-specific rates were identical
+
+age_rates <- tibble::tibble(
+  age_group = c("18-29", "30-39", "40-49", "50-59", "60-69", "70-79", "80+"),
+  binge_rate = c(0.35,    0.25,    0.18,    0.12,    0.07,    0.04,    0.02)
+)
+
+# Younger population structure (2011-like)
+pop_young <- c(0.22, 0.20, 0.18, 0.16, 0.13, 0.07, 0.04)
+# Older population structure (2024-like)
+pop_older <- c(0.17, 0.17, 0.18, 0.17, 0.16, 0.09, 0.06)
+
+crude_young <- sum(age_rates$binge_rate * pop_young)
+crude_older <- sum(age_rates$binge_rate * pop_older)
+
+cat("Crude rate (young pop structure):", round(crude_young * 100, 1), "%\n")
+cat("Crude rate (older pop structure):", round(crude_older * 100, 1), "%\n")
+cat("Difference:", round((crude_young - crude_older) * 100, 1), "pp\n\n")
+cat("This difference is ENTIRELY due to age structure change —\n")
+cat("not any actual change in drinking behavior!\n")
+```
+
+---
+
+## The Year 2000 Standard Population
+
+The U.S. uses the **Year 2000 U.S. standard population** (from NCHS Statistical Note 20) as the reference for age standardization. This is the official CDC standard and allows comparison with other studies and surveillance data.
+
+```{r year2000-std}
+# Year 2000 standard population counts (5-year bands, in thousands)
+std2000_5yr <- c(
+  "15-19" = 72169, "20-24" = 66478, "25-29" = 64529,
+  "30-34" = 71044, "35-39" = 80762, "40-44" = 81851,
+  "45-49" = 72118, "50-54" = 62716, "55-59" = 48454,
+  "60-64" = 38793, "65-69" = 34264, "70-74" = 31773,
+  "75-79" = 26999, "80-84" = 17842, "85+"   = 15508
+)
+```
+
+We collapse these 5-year bands into **7 age bands** that match the BRFSS `_AGEG5YR` structure:
+
+```{r age7-weights, exercise=TRUE}
+g <- function(k) std2000_5yr[[k]]
+
+std_10bin_counts <- c(
+  "18-24" = 0.4 * g("15-19") + g("20-24"),  # 18-19 = 2/5 of 15-19 band
+  "25-29" = g("25-29"), "30-34" = g("30-34"), "35-39" = g("35-39"),
+  "40-44" = g("40-44"), "45-49" = g("45-49"), "50-54" = g("50-54"),
+  "55-59" = g("55-59"), "60-64" = g("60-64"),
+  "65+"   = g("65-69") + g("70-74") + g("75-79") + g("80-84") + g("85+")
+)
+
+# Combine into 7 bands
+w_2000_age7_counts <- c(
+  "18-29" = unname(std_10bin_counts["18-24"]) + unname(std_10bin_counts["25-29"]),
+  "30-39" = unname(std_10bin_counts["30-34"]) + unname(std_10bin_counts["35-39"]),
+  "40-49" = unname(std_10bin_counts["40-44"]) + unname(std_10bin_counts["45-49"]),
+  "50-59" = unname(std_10bin_counts["50-54"]) + unname(std_10bin_counts["55-59"]),
+  "60-69" = unname(std_10bin_counts["60-64"]) + g("65-69"),
+  "70-79" = g("70-74") + g("75-79"),
+  "80+"   = g("80-84") + g("85+")
+)
+
+# Proportional weights (must sum to 1)
+w_2000_age7 <- w_2000_age7_counts / sum(w_2000_age7_counts)
+round(w_2000_age7 * 100, 1)  # as percentages
+```
+
+Note how the 18–29 and 30–39 bands receive the most weight — reflecting the relatively young Year 2000 U.S. population.
+
+```{r weights-quiz}
+quiz(
+  question(
+    "Why do we use counts (not proportions) in svystandardize()?",
+    answer("Counts produce more accurate estimates"),
+    answer("svystandardize() internally converts counts to proportions, so either works"),
+    answer("The survey package requires population counts, not proportions, to scale the standardization weights correctly", correct = TRUE),
+    answer("Using proportions would change the point estimate"),
+    allow_retry = TRUE
+  )
+)
+```
+
+---
+
+## `svystandardize()`: Direct Age Standardization
+
+The `survey::svystandardize()` function modifies a survey design so that the resulting estimates are age-standardized to a reference population.
+
+```{r svystandardize-demo, exercise=TRUE}
+# Age-standardized prevalence for year 2019
+df_yr <- df_all |> dplyr::filter(year == 2019, !is.na(age7))
+
+des_yr <- survey::svydesign(
+  id = ~psu_id, strata = ~strata_id, weights = ~wt,
+  data = df_yr, nest = TRUE
+)
+
+# Apply direct standardization to Year 2000 7-band standard
+des_std <- survey::svystandardize(
+  des_yr,
+  by         = ~age7,               # standardize over this variable
+  population = w_2000_age7_counts   # reference population counts
+)
+
+# Compute age-adjusted prevalence
+out_adj <- survey::svymean(~any_binge_cdc, des_std, na.rm = TRUE)
+out_crude <- survey::svymean(~any_binge_cdc, des_yr, na.rm = TRUE)
+
+ci_adj   <- suppressWarnings(confint(out_adj))
+ci_crude <- suppressWarnings(confint(out_crude))
+
+cat("Year 2019:\n")
+cat(sprintf("  Crude:        %.1f%% (%.1f-%.1f)\n",
+    coef(out_crude)[1]*100, ci_crude[1]*100, ci_crude[2]*100))
+cat(sprintf("  Age-adjusted: %.1f%% (%.1f-%.1f)\n",
+    coef(out_adj)[1]*100, ci_adj[1]*100, ci_adj[2]*100))
+```
+
+---
+
+## Age-Standardized Trend: Full 2011–2024 Loop
+
+```{r ageadj-trend, exercise=TRUE}
+prev_all_prop_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
+  df_yr <- df_all |> dplyr::filter(year == yr, !is.na(age7))
+
+  des_yr <- survey::svydesign(
+    id = ~psu_id, strata = ~strata_id, weights = ~wt,
+    data = df_yr, nest = TRUE
+  )
+
+  # Apply Year 2000 age standardization
+  des_std <- survey::svystandardize(
+    des_yr,
+    by         = ~age7,
+    population = w_2000_age7_counts
+  )
+
+  out <- survey::svymean(~any_binge_cdc, des_std, na.rm = TRUE)
+  ci  <- suppressWarnings(confint(out))
+
+  tibble::tibble(
+    year = as.integer(yr),
+    est  = as.numeric(out)[1],
+    lcl  = ci[1, 1],
+    ucl  = ci[1, 2]
+  )
+}) |>
+  dplyr::arrange(year)
+
+prev_all_prop_ageadj |>
+  dplyr::mutate(
+    est_pct = round(est * 100, 1),
+    ci = sprintf("%.1f (%.1f-%.1f)", est_pct, lcl * 100, ucl * 100)
+  ) |>
+  dplyr::select(year, ci) |>
+  print()
+```
+
+---
+
+## Stratified Age-Adjusted Estimates
+
+To get age-adjusted estimates *within* demographic groups (e.g., by sex), use the `over` argument in `svystandardize()`:
+
+```{r strat-ageadj, exercise=TRUE}
+# Age-adjusted prevalence by sex — 2022
+df_yr <- df_all |> dplyr::filter(year == 2022, !is.na(age7), !is.na(sex_f))
+
+des_yr <- survey::svydesign(
+  id = ~psu_id, strata = ~strata_id, weights = ~wt,
+  data = df_yr, nest = TRUE
+)
+
+# Standardize within each sex group separately
+des_std <- survey::svystandardize(
+  des_yr,
+  by         = ~age7,    # age bands to standardize over
+  over       = ~sex_f,   # compute separately for each sex
+  population = w_2000_age7_counts
+)
+
+out <- survey::svyby(
+  ~any_binge_cdc, ~sex_f, des_std, survey::svymean,
+  na.rm = TRUE, vartype = "ci"
+)
+
+out |>
+  tibble::as_tibble() |>
+  dplyr::transmute(
+    sex      = sex_f,
+    prev_pct = round(any_binge_cdc * 100, 1),
+    lcl_pct  = round(ci_l * 100, 1),
+    ucl_pct  = round(ci_u * 100, 1),
+    ci       = sprintf("%.1f (%.1f-%.1f)", prev_pct, lcl_pct, ucl_pct)
+  )
+```
+
+---
+
+## Crude vs. Age-Adjusted: Side-by-Side Comparison
+
+```{r crude-vs-adj, exercise=TRUE}
+comparison <- purrr::map_dfr(c(2011, 2015, 2019, 2024), function(yr) {
+  df_yr <- df_all |> dplyr::filter(year == yr, !is.na(age7))
+  des_yr <- survey::svydesign(
+    id = ~psu_id, strata = ~strata_id, weights = ~wt,
+    data = df_yr, nest = TRUE
+  )
+  des_std <- survey::svystandardize(des_yr, by = ~age7, population = w_2000_age7_counts)
+
+  crude <- coef(survey::svymean(~any_binge_cdc, des_yr, na.rm = TRUE))[1]
+  adj   <- coef(survey::svymean(~any_binge_cdc, des_std, na.rm = TRUE))[1]
+
+  tibble::tibble(year = yr, crude_pct = round(crude * 100, 1), adj_pct = round(adj * 100, 1))
+})
+
+comparison |>
+  dplyr::mutate(diff_pp = round(adj_pct - crude_pct, 1)) |>
+  print()
+```
+
+---
+
+## Module Summary
+
+You have learned:
+
+- **Why age-standardize:** Crude rates are confounded by population age structure; standardization enables valid time-trend comparisons
+- **Year 2000 standard:** The U.S. CDC standard; creates 7 bands from NCHS 5-year population counts
+- **`svystandardize()`:** Directly standardizes a survey design to a reference population; returns a modified design object that produces age-adjusted estimates
+- **`over` argument:** Compute stratified age-adjusted estimates simultaneously for demographic groups
+- Age-adjusted estimates will differ from crude estimates when the study population's age distribution differs from the standard
+
+**Next:** Module 7 covers stratified trend analysis across demographic subgroups and formal trend testing.

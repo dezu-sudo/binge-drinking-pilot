@@ -1,0 +1,380 @@
+---
+title: "Module 7: Stratified Analysis and Trend Testing"
+output:
+  learnr::tutorial:
+    progressive: true
+    allow_skip: true
+    theme: "flatly"
+runtime: shiny_prerendered
+description: "Compute age-adjusted prevalence trends by race/ethnicity, education, income, and other subgroups."
+---
+
+```{r setup, include=FALSE}
+library(learnr)
+library(tidyverse)
+library(survey)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+tutorial_options(exercise.timelimit = 180)
+options(survey.lonely.psu = "adjust")
+
+source("synthetic_brfss.R", local = TRUE)
+
+df_all <- make_synthetic_brfss(n_per_year = 1200, years = 2011:2024) |>
+  dplyr::mutate(
+    any_binge_cdc = dplyr::case_when(
+      rfbing5 == 2 ~ 1L, rfbing5 == 1 ~ 0L, TRUE ~ NA_integer_
+    ),
+    sex_f = factor(sex, levels = c(2, 1), labels = c("Female", "Male")),
+    race4 = dplyr::recode(as.integer(imprace),
+      `1`="NH White", `2`="NH Black", `3`="NH AI/AN",
+      `4`="NH Asian/NHPI", `5`="NH Asian/NHPI", `6`="NH Other",
+      .default = NA_character_
+    ) |> factor(levels = c("NH White","NH Black","NH AI/AN","NH Asian/NHPI","NH Other")),
+    age7 = dplyr::case_when(
+      age5 %in% 1:2 ~ "18-29", age5 %in% 3:4 ~ "30-39",
+      age5 %in% 5:6 ~ "40-49", age5 %in% 7:8 ~ "50-59",
+      age5 %in% 9:10 ~ "60-69", age5 %in% 11:12 ~ "70-79",
+      age5 == 13 ~ "80+", TRUE ~ NA_character_
+    ) |> factor(levels = c("18-29","30-39","40-49","50-59","60-69","70-79","80+")),
+    educ4 = dplyr::recode(as.integer(educag),
+      `1`="<HS", `2`="HS/GED", `3`="Some college/AA", `4`="College",
+      .default = NA_character_
+    ) |> factor(levels = c("<HS","HS/GED","Some college/AA","College"), ordered = TRUE),
+    strata_id = as.integer(interaction(year, strata, drop = TRUE)),
+    psu_id    = as.integer(interaction(year, psu,    drop = TRUE)),
+    is_current = dplyr::case_when(
+      alcday5 %in% c(777, 999) ~ NA, alcday5 == 888 ~ FALSE, TRUE ~ TRUE
+    )
+  ) |>
+  dplyr::filter(!is.na(sex_f), !is.na(age7))
+
+# Standard population weights
+g <- function(k) c("15-19"=72169,"20-24"=66478,"25-29"=64529,"30-34"=71044,
+                   "35-39"=80762,"40-44"=81851,"45-49"=72118,"50-54"=62716,
+                   "55-59"=48454,"60-64"=38793,"65-69"=34264,"70-74"=31773,
+                   "75-79"=26999,"80-84"=17842,"85+"=15508)[[k]]
+
+w_2000_age7_counts <- c(
+  "18-29" = 0.4*g("15-19") + g("20-24") + g("25-29"),
+  "30-39" = g("30-34") + g("35-39"),
+  "40-49" = g("40-44") + g("45-49"),
+  "50-59" = g("50-54") + g("55-59"),
+  "60-69" = g("60-64") + g("65-69"),
+  "70-79" = g("70-74") + g("75-79"),
+  "80+"   = g("80-84") + g("85+")
+)
+```
+
+## Overview: Stratified Trend Analysis
+
+After computing the overall trend, we break down prevalence by demographic subgroups:
+
+| Subgroup | Categories | Notes |
+|----------|-----------|-------|
+| Sex | Female, Male | 2 levels |
+| Race/ethnicity | NH White, NH Black, Hispanic, NH AI/AN, NH Asian/NHPI, NH Other | Age-adjusted within each group |
+| Education | <HS, HS/GED, Some college/AA, College | 4 levels |
+| Income | <$25k, $25–<$50k, ≥$50k | 3-level summary |
+| Employment | Employed, Unemployed, NILF | |
+| Marital status | Married/Partnered, Not married | |
+| Insurance | Yes, No | |
+
+Each stratified analysis follows the same pattern: **loop over years, build year-specific design, apply standardization within stratum, extract estimates.**
+
+---
+
+## Pattern: Stratified Age-Adjusted Trend
+
+```{r strat-pattern-def}
+# Generic function: age-adjusted prevalence by a grouping variable, by year
+prev_stratified_ageadj <- function(df, group_var, years = 2011:2024) {
+  group_sym <- rlang::sym(group_var)
+
+  purrr::map_dfr(years, function(yr) {
+    df_yr <- df |>
+      dplyr::filter(year == yr, !is.na(age7), !is.na(!!group_sym))
+
+    if (nrow(df_yr) < 50) {
+      message("Skipping year ", yr, " — too few observations (n=", nrow(df_yr), ")")
+      return(NULL)
+    }
+
+    des_yr <- survey::svydesign(
+      id = ~psu_id, strata = ~strata_id, weights = ~wt,
+      data = df_yr, nest = TRUE
+    )
+
+    des_std <- survey::svystandardize(
+      des_yr,
+      by         = ~age7,
+      over       = rlang::new_formula(NULL, group_sym),
+      population = w_2000_age7_counts
+    )
+
+    survey::svyby(
+      ~any_binge_cdc,
+      rlang::new_formula(NULL, group_sym),
+      des_std,
+      survey::svymean,
+      na.rm = TRUE,
+      vartype = "ci"
+    ) |>
+      tibble::as_tibble() |>
+      dplyr::mutate(year = yr)
+  })
+}
+```
+
+---
+
+## By Sex
+
+```{r by-sex, exercise=TRUE}
+prev_sex <- prev_stratified_ageadj(df_all, "sex_f")
+
+prev_sex |>
+  dplyr::transmute(
+    sex  = as.character(sex_f),
+    year = as.integer(year),
+    est  = any_binge_cdc,
+    lcl  = ci_l,
+    ucl  = ci_u
+  ) |>
+  dplyr::arrange(sex, year) |>
+  dplyr::filter(year %in% c(2011, 2016, 2020, 2024)) |>
+  dplyr::mutate(ci = sprintf("%.1f (%.1f-%.1f)", est*100, lcl*100, ucl*100)) |>
+  dplyr::select(sex, year, ci) |>
+  tidyr::pivot_wider(names_from = year, values_from = ci) |>
+  print()
+```
+
+---
+
+## By Race/Ethnicity
+
+Race/ethnicity estimates are particularly important for identifying **disparities** and **differential trends**.
+
+```{r by-race, exercise=TRUE}
+prev_race <- prev_stratified_ageadj(df_all, "race4")
+
+prev_race_tidy <- prev_race |>
+  dplyr::transmute(
+    race = as.character(race4),
+    year = as.integer(year),
+    est  = any_binge_cdc,
+    lcl  = ci_l,
+    ucl  = ci_u
+  ) |>
+  dplyr::arrange(race, year)
+
+# Summary: first and last year by race group
+prev_race_tidy |>
+  dplyr::filter(year %in% c(2011, 2024)) |>
+  dplyr::mutate(ci = sprintf("%.1f (%.1f-%.1f)", est*100, lcl*100, ucl*100)) |>
+  dplyr::select(race, year, ci) |>
+  tidyr::pivot_wider(names_from = year, values_from = ci) |>
+  print()
+```
+
+---
+
+## By Education
+
+```{r by-educ, exercise=TRUE}
+prev_educ <- prev_stratified_ageadj(df_all, "educ4")
+
+prev_educ |>
+  dplyr::transmute(
+    educ = as.character(educ4),
+    year = as.integer(year),
+    prev_pct = round(any_binge_cdc * 100, 1)
+  ) |>
+  dplyr::filter(year %in% c(2011, 2014, 2018, 2024)) |>
+  tidyr::pivot_wider(names_from = year, values_from = prev_pct) |>
+  print()
+```
+
+```{r educ-quiz}
+quiz(
+  question(
+    "Which education group would you expect to have the highest binge drinking prevalence in the U.S.?",
+    answer("Less than high school (<HS)"),
+    answer("High school / GED"),
+    answer("Some college / Associate's degree"),
+    answer("College graduate or higher", correct = TRUE,
+           message = "Counterintuitively, college graduates in the U.S. have higher binge drinking prevalence — likely due to college drinking culture and higher social occasion drinking."),
+    allow_retry = TRUE
+  )
+)
+```
+
+---
+
+## State-Level Estimates
+
+State-level analysis requires the state FIPS code variable and a lookup crosswalk.
+
+```{r state-crosswalk}
+# State FIPS → abbreviation/name crosswalk (first 10 states)
+state_xwalk <- tibble::tibble(
+  fips = c(1, 2, 4, 5, 6, 8, 9, 10, 11, 12),
+  state_abbr = c("AL","AK","AZ","AR","CA","CO","CT","DE","DC","FL"),
+  state_name = c("Alabama","Alaska","Arizona","Arkansas","California",
+                 "Colorado","Connecticut","Delaware","District of Columbia","Florida")
+)
+head(state_xwalk)
+```
+
+```{r state-prev, exercise=TRUE}
+# State-level prevalence for a single year (2022)
+df_yr <- df_all |> dplyr::filter(year == 2022, !is.na(age7))
+
+des_yr <- survey::svydesign(
+  id = ~psu_id, strata = ~strata_id, weights = ~wt,
+  data = df_yr, nest = TRUE
+)
+
+# Note: svystandardize over state × age7 requires enough obs per cell
+# For small states this can be unstable — check cell sizes
+state_prev <- survey::svyby(
+  ~any_binge_cdc, ~state, des_yr, survey::svymean,
+  na.rm = TRUE, vartype = "ci"
+) |>
+  tibble::as_tibble() |>
+  dplyr::transmute(
+    state_code = as.integer(state),
+    est = any_binge_cdc,
+    lcl = ci_l,
+    ucl = ci_u,
+    est_pct = round(est * 100, 1)
+  ) |>
+  dplyr::arrange(dplyr::desc(est_pct))
+
+cat("Top 5 states by binge prevalence (2022, synthetic data):\n")
+head(state_prev, 5)
+```
+
+---
+
+## State Rankings
+
+```{r state-rankings}
+rank_states_by_year <- function(df_state_prev) {
+  df_state_prev |>
+    dplyr::group_by(year) |>
+    dplyr::mutate(
+      n_ranked    = sum(!is.na(est)),
+      rank_desc   = dplyr::if_else(
+        is.na(est), NA_integer_,
+        dplyr::dense_rank(dplyr::desc(est))
+      ),
+      percentile  = dplyr::if_else(
+        is.na(est), NA_real_,
+        dplyr::percent_rank(est)
+      )
+    ) |>
+    dplyr::ungroup()
+}
+```
+
+```{r rankings-exercise, exercise=TRUE}
+# Simulate state-level data for ranking exercise
+set.seed(42)
+state_sim <- tibble::tibble(
+  state_code = rep(1:51, times = 3),
+  year       = rep(c(2015, 2019, 2022), each = 51),
+  est        = runif(153, 0.10, 0.32)
+)
+
+ranked <- rank_states_by_year(state_sim)
+
+ranked |>
+  dplyr::filter(year == 2022) |>
+  dplyr::arrange(rank_desc) |>
+  dplyr::slice_head(n = 5) |>
+  dplyr::transmute(
+    state_code, est_pct = round(est * 100, 1), rank = rank_desc
+  )
+```
+
+---
+
+## Adjacent-Year Differences with BH Correction
+
+When computing adjacent-year differences for multiple subgroups simultaneously, adjust for the additional tests:
+
+```{r multi-test-correction, exercise=TRUE}
+# Example: adjacent-year diffs for 2 sex groups × 13 year transitions = 26 tests
+prev_sex_annual <- prev_stratified_ageadj(df_all, "sex_f")
+
+sex_diffs <- prev_sex_annual |>
+  dplyr::transmute(
+    sex  = as.character(sex_f),
+    year = as.integer(year),
+    est  = any_binge_cdc,
+    lcl  = ci_l,
+    ucl  = ci_u
+  ) |>
+  dplyr::arrange(sex, year) |>
+  dplyr::group_by(sex) |>
+  dplyr::mutate(
+    prev_est = dplyr::lag(est),
+    se_curr  = (ucl - lcl) / (2 * 1.96),
+    se_prev  = (dplyr::lag(ucl) - dplyr::lag(lcl)) / (2 * 1.96),
+    se_delta = sqrt(se_curr^2 + se_prev^2),
+    z        = (est - prev_est) / se_delta,
+    p_raw    = 2 * (1 - pnorm(abs(z)))
+  ) |>
+  dplyr::filter(!is.na(prev_est)) |>
+  dplyr::ungroup() |>
+  # BH correction across ALL sex × year combinations
+  dplyr::mutate(p_adj_bh = p.adjust(p_raw, method = "BH"))
+
+# Count significant transitions after BH correction
+cat("Significant adjacent-year changes (p_adj < 0.05) by sex:\n")
+sex_diffs |>
+  dplyr::filter(p_adj_bh < 0.05) |>
+  dplyr::count(sex) |>
+  print()
+```
+
+---
+
+## Joinpoint Regression: Exporting to NCI Format
+
+For formal trend analysis including identification of trend inflection points, data can be exported for the **NCI Joinpoint Regression Program** (a free tool from the National Cancer Institute):
+
+```{r joinpoint-export, eval=FALSE}
+# Export format: year, estimate (proportion), SE
+# SE is derived from CI: SE = (UCL - LCL) / (2 * 1.96)
+
+prev_joinpoint <- prev_all_prop_ageadj |>
+  dplyr::mutate(se = (ucl - lcl) / (2 * 1.96)) |>
+  dplyr::select(year, est, se)
+
+readr::write_csv(prev_joinpoint,
+  file.path(tab_dir, "joinpoint_input_alladults_overall.csv"))
+
+# By subgroup: separate file per group (Joinpoint expects one group per file)
+prev_race_all_ageadj |>
+  dplyr::mutate(se = (ucl - lcl) / (2 * 1.96)) |>
+  dplyr::group_by(race6_nat) |>
+  dplyr::group_walk(~ readr::write_csv(
+    dplyr::select(.x, year, est, se),
+    file.path(tab_dir, paste0("joinpoint_input_race_", .y$race6_nat, ".csv"))
+  ))
+```
+
+---
+
+## Module Summary
+
+You have learned:
+
+- Stratified age-adjusted trends use the same `svystandardize()` + `svyby()` pattern, looped over years
+- The `over` argument in `svystandardize()` standardizes each subgroup separately
+- State-level estimates require adequate cell sizes — flag or suppress estimates from small cells
+- Multiple subgroup comparisons need **BH correction applied across all tests jointly**
+- NCI Joinpoint format requires `year`, `estimate`, and `SE` columns
+
+**Next:** Module 8 builds publication-quality visualizations with ggplot2.

@@ -1,0 +1,372 @@
+---
+title: "Module 2: Loading and Auditing BRFSS Data"
+output:
+  learnr::tutorial:
+    progressive: true
+    allow_skip: true
+    theme: "flatly"
+runtime: shiny_prerendered
+description: "Read BRFSS XPT files, handle variable name inconsistencies across years, and audit your data sources."
+---
+
+```{r setup, include=FALSE}
+library(learnr)
+library(tidyverse)
+library(janitor)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+tutorial_options(exercise.timelimit = 60)
+
+# Synthetic data for exercises
+source("synthetic_brfss.R", local = TRUE)
+raw_demo <- make_demo_year(yr = 2019, n = 800)
+
+# Simulate a "raw" XPT-like data frame with messy column names (as BRFSS actually looks)
+set.seed(1)
+n_raw <- 500
+raw_2019 <- data.frame(
+  X_LLCPWT  = runif(n_raw, 100, 15000),
+  X_STSTR   = sample(1:50, n_raw, replace = TRUE),
+  X_PSU     = sample(1:100, n_raw, replace = TRUE),
+  SEXVAR    = sample(1:2, n_raw, replace = TRUE),
+  X_AGEG5YR = sample(1:13, n_raw, replace = TRUE),
+  X_RFBING5 = sample(c(1L, 2L, NA), n_raw, replace = TRUE, prob = c(0.74, 0.24, 0.02)),
+  DRNK3GE5  = sample(c(0:10, 88L, NA), n_raw, replace = TRUE),
+  ALCDAY5   = sample(c(101:107, 201:231, 888L), n_raw, replace = TRUE),
+  EDUCAG    = sample(1:4, n_raw, replace = TRUE),
+  INCOME2   = sample(1:8, n_raw, replace = TRUE),
+  X_IMPRACE = sample(1:6, n_raw, replace = TRUE),
+  stringsAsFactors = FALSE
+)
+
+# 2011-style raw names (different naming conventions)
+raw_2011 <- raw_2019
+names(raw_2011)[names(raw_2011) == "SEXVAR"]    <- "SEX"
+names(raw_2011)[names(raw_2011) == "X_LLCPWT"]  <- "X_LLCPWT"   # same
+names(raw_2011)[names(raw_2011) == "X_RFBING5"] <- "X_RFBING5"   # same
+names(raw_2011)[names(raw_2011) == "ALCDAY5"]   <- "ALCDAY5"      # same
+names(raw_2011)[names(raw_2011) == "X_IMPRACE"] <- "X_IMPRACE"    # same
+```
+
+## The Challenge: 14 Years, Constantly Changing Variable Names
+
+When BRFSS releases annual data, the variable names are inconsistent across years. The same underlying measure may appear as:
+
+| Variable | 2011 name | 2016 name | 2019 name | 2022 name |
+|----------|-----------|-----------|-----------|-----------|
+| Sex | `SEX` | `SEX` | `SEXVAR` | `SEXVAR` |
+| Survey weight | `_LLCPWT` | `_LLCPWT` | `_LLCPWT` | `_LLCPWT` |
+| Binge flag | `_RFBING5` | `_RFBING5` | `_RFBING5` | `_RFBING6` |
+| Alcohol days | `ALCDAY5` | `ALCDAY5` | `ALCDAY5` | `ALCDAY4` |
+| Age group | `_AGEG5YR` | `_AGEG5YR` | `_AGEG5YR` | `_AGEG5YR` |
+
+Additionally, SAS variable names starting with `_` become `X_` after `janitor::clean_names()` converts them to R-safe names.
+
+**The solution:** A `find_var()` helper that searches a list of candidate names and returns whichever one is present.
+
+---
+
+## The `find_var()` Helper
+
+```{r find-var-def}
+# Robust variable resolver across BRFSS survey years
+find_var <- function(df, candidates) {
+  nms <- tolower(names(df))
+
+  # Pass 1: exact match (case-insensitive)
+  for (cand in tolower(candidates)) {
+    hit <- which(nms == cand)
+    if (length(hit)) return(names(df)[hit[1]])
+  }
+
+  # Pass 2: strip leading underscore (handles _VAR vs VAR)
+  nms2 <- sub("^_", "", nms)
+  for (cand in tolower(candidates)) {
+    hit <- which(nms2 == sub("^_", "", cand))
+    if (length(hit)) return(names(df)[hit[1]])
+  }
+
+  NA_character_  # not found
+}
+```
+
+**How it works:**
+
+1. Converts all column names to lowercase for case-insensitive comparison
+2. Tries each candidate name in order of preference
+3. Falls back to stripping leading underscores (important for `_LLCPWT` → `llcpwt`)
+4. Returns `NA` if nothing matches — which triggers a meaningful error message
+
+---
+
+## Exercise: Using `find_var()`
+
+The raw BRFSS data has messy column names. Practice using `find_var()` to locate variables.
+
+```{r findvar-exercise, exercise=TRUE}
+# The raw_2019 data frame has these columns:
+names(raw_2019)
+```
+
+```{r findvar-resolve, exercise=TRUE}
+# Use find_var() to locate the survey weight variable
+# Candidates in preference order: _LLCPWT is the BRFSS weight variable
+# After clean_names() it becomes: x_llcpwt
+
+find_var(raw_2019, c("_llcpwt", "llcpwt", "x_llcpwt", "cllcpwt"))
+```
+
+```{r findvar-sex, exercise=TRUE}
+# Now find the sex variable — it changed names across years
+# Try: sex, sex1, sexvar, rcsgendr (in preference order)
+
+nm_sex <- find_var(raw_2019, c("sex", "sex1", "sexvar", "rcsgendr"))
+cat("Sex variable found as:", nm_sex, "\n")
+
+# Access it dynamically
+head(raw_2019[[nm_sex]])
+```
+
+```{r findvar-missing, exercise=TRUE}
+# What happens when a variable doesn't exist?
+# Try finding a variable that isn't in this dataset:
+
+nm_test <- find_var(raw_2019, c("hlthpln1", "hlthpln2", "x_hlthpln1"))
+cat("Result:", nm_test, "\n")
+cat("Is NA:", is.na(nm_test), "\n")
+```
+
+---
+
+## Loading BRFSS XPT Files
+
+Real BRFSS data comes as SAS transport (`.XPT`) files. We use `haven::read_xpt()` to load them, followed by `janitor::clean_names()` to make column names R-friendly.
+
+```{r loading-code, eval=FALSE}
+library(haven)
+library(janitor)
+
+# Load a single year
+df_2019 <- haven::read_xpt("data/raw/2019/LLCP2019.XPT_") |>
+  janitor::clean_names()
+
+# What clean_names() does:
+# _LLCPWT  →  x_llcpwt   (leading underscore → x_)
+# SEXVAR   →  sexvar      (lowercase)
+# _AGEG5YR →  x_ageg5yr
+
+dim(df_2019)
+names(df_2019)[1:20]
+```
+
+In this course we work with **synthetic data** that mimics BRFSS structure. The loading logic is identical to what you'd use with real data.
+
+---
+
+## The `read_year_min()` Function
+
+Rather than loading all ~300+ variables from each year's BRFSS file, we extract only what we need. This reduces memory use and makes the workflow transparent.
+
+```{r read-year-min}
+read_year_min <- function(yr, df_raw) {
+  # df_raw: a data frame already loaded and clean_names()'d
+
+  # Resolve variable names using find_var()
+  nm_wt     <- find_var(df_raw, c("x_llcpwt", "llcpwt", "cllcpwt"))
+  nm_strata <- find_var(df_raw, c("x_ststr", "ststr"))
+  nm_psu    <- find_var(df_raw, c("x_psu", "psu"))
+  nm_alcday <- find_var(df_raw, c("alcday5", "alcday4"))   # alcday4 from 2020+
+  nm_binge  <- find_var(df_raw, c("drnk3ge5", "x_drnk3ge5"))
+  nm_rfbing <- find_var(df_raw, c("x_rfbing6", "rfbing6", "x_rfbing5", "rfbing5"))
+  nm_sex    <- find_var(df_raw, c("sex", "sex1", "sexvar", "rcsgendr"))
+  nm_age5   <- find_var(df_raw, c("x_ageg5yr", "ageg5yr"))
+  nm_educag <- find_var(df_raw, c("educag", "x_educag"))
+  nm_income2 <- find_var(df_raw, c("income2"))
+  nm_imprace <- find_var(df_raw, c("x_imprace", "imprace"))
+
+  # Check required variables are present
+  required <- c(nm_wt, nm_strata, nm_psu, nm_alcday, nm_binge, nm_sex, nm_age5)
+  if (any(is.na(required))) {
+    stop("Missing required variables for year ", yr,
+         "\nResolved: wt=", nm_wt, " strata=", nm_strata, " psu=", nm_psu,
+         " alcday=", nm_alcday, " binge=", nm_binge,
+         " sex=", nm_sex, " age5=", nm_age5)
+  }
+
+  # Build standardized minimal dataset
+  dplyr::transmute(
+    df_raw,
+    year    = as.integer(yr),
+    wt      = .data[[nm_wt]],
+    strata  = .data[[nm_strata]],
+    psu     = .data[[nm_psu]],
+    alcday5 = .data[[nm_alcday]],              # unified name regardless of source
+    binge_episodes_raw = .data[[nm_binge]],
+    rfbing5 = if (!is.na(nm_rfbing)) .data[[nm_rfbing]] else NA,
+    sex_raw = .data[[nm_sex]],
+    age5    = .data[[nm_age5]],
+    educag  = if (!is.na(nm_educag)) .data[[nm_educag]] else NA,
+    income2_raw = if (!is.na(nm_income2)) .data[[nm_income2]] else NA,
+    imprace_raw = if (!is.na(nm_imprace)) .data[[nm_imprace]] else NA
+  )
+}
+```
+
+---
+
+## Exercise: Apply `read_year_min()`
+
+```{r apply-reader, exercise=TRUE, exercise.setup="findvar-setup"}
+# Apply read_year_min() to the synthetic 2019 data
+# (In real use you'd apply it to the loaded XPT data frame)
+
+# First, clean the column names to match what clean_names() would produce
+df_clean_2019 <- janitor::clean_names(raw_2019)
+names(df_clean_2019)
+```
+
+```{r apply-reader-2, exercise=TRUE}
+df_clean_2019 <- janitor::clean_names(raw_2019)
+
+min_2019 <- read_year_min(2019, df_clean_2019)
+
+cat("Original columns:", ncol(df_clean_2019), "\n")
+cat("Minimal columns:", ncol(min_2019), "\n\n")
+cat("Standardized names:\n")
+print(names(min_2019))
+```
+
+---
+
+## The Resolver Audit
+
+Before processing all years, we audit which raw variable name was selected for each key variable in each year. This is essential for:
+
+1. **Reproducibility** — documenting exactly which source was used
+2. **Catching errors** — if a year resolves to an unexpected variable, something is wrong
+3. **Publication methods** — reporting variable sources in supplementary materials
+
+```{r audit-function}
+audit_find <- function(df) {
+  list(
+    wt      = find_var(df, c("x_llcpwt", "llcpwt")),
+    strata  = find_var(df, c("x_ststr", "ststr")),
+    psu     = find_var(df, c("x_psu", "psu")),
+    alcday  = find_var(df, c("alcday5", "alcday4")),
+    binge   = find_var(df, c("drnk3ge5", "x_drnk3ge5")),
+    rfbing  = find_var(df, c("x_rfbing6", "rfbing6", "x_rfbing5", "rfbing5")),
+    sex     = find_var(df, c("sex", "sex1", "sexvar", "rcsgendr")),
+    age5    = find_var(df, c("x_ageg5yr", "ageg5yr")),
+    educag  = find_var(df, c("educag", "x_educag")),
+    imprace = find_var(df, c("x_imprace", "imprace"))
+  )
+}
+```
+
+```{r audit-demo, exercise=TRUE}
+# Audit two "years" of synthetic data to see which variables resolved
+df_2019_clean <- janitor::clean_names(raw_2019)
+df_2011_clean <- janitor::clean_names(raw_2011)
+
+aud_2019 <- audit_find(df_2019_clean)
+aud_2011 <- audit_find(df_2011_clean)
+
+audit_table <- dplyr::bind_rows(
+  tibble::tibble(year = 2019, variable = names(aud_2019), resolved_as = unlist(aud_2019)),
+  tibble::tibble(year = 2011, variable = names(aud_2011), resolved_as = unlist(aud_2011))
+) |>
+  tidyr::pivot_wider(names_from = year, values_from = resolved_as)
+
+print(audit_table)
+```
+
+Notice how `sex` in 2011 resolves to `sex` but in 2019 to `sexvar` — the audit makes this visible.
+
+---
+
+## Caching Processed Data
+
+Processing 14 years of BRFSS data (each file ~500,000 rows, ~300 variables) takes minutes even on fast hardware. We use an RDS cache to avoid re-processing on every run.
+
+```{r cache-concept, eval=FALSE}
+CACHE_VER <- "v2026-01-16_popTrend_racefix2.1"
+
+read_year_cached <- function(yr, xpt_path) {
+  cache_dir <- file.path(PROJ_DIR, "data/cache")
+  dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+
+  cache_rds <- file.path(cache_dir, paste0("BRFSS_", yr, "_", CACHE_VER, ".rds"))
+
+  if (file.exists(cache_rds)) {
+    obj <- tryCatch(readRDS(cache_rds), error = function(e) NULL)
+
+    # Validate that the cached object has expected structure
+    needed <- c("year", "wt", "strata", "psu", "sex", "age5", "any_binge_cdc")
+    if (!is.null(obj) && all(needed %in% names(obj))) {
+      message("Loaded from cache: BRFSS ", yr)
+      return(obj)
+    }
+  }
+
+  # Cache miss — build from raw data
+  message("Processing raw data for year: ", yr)
+  d <- read_year_min(yr, haven::read_xpt(xpt_path) |> janitor::clean_names()) |>
+    recode_analysis()
+
+  saveRDS(d, cache_rds)
+  d
+}
+```
+
+**Key design decisions:**
+
+- The cache version string (`CACHE_VER`) is bumped whenever the recoding logic changes
+- Old caches with the previous version string are automatically ignored
+- This prevents subtle errors from running new code against stale cached output
+
+```{r caching-quiz}
+quiz(
+  question(
+    "Why do we include a version string in the cache file name?",
+    answer("To make file names unique"),
+    answer("So that old caches are automatically invalidated when recoding logic changes", correct = TRUE),
+    answer("To track which user created the cache"),
+    answer("To enable parallel cache reads"),
+    allow_retry = TRUE
+  )
+)
+```
+
+---
+
+## Combining Years
+
+After loading each year, we combine them into a single pooled data frame:
+
+```{r combine-years, exercise=TRUE}
+# Simulate combining two years of synthetic data
+source("synthetic_brfss.R")
+df_2018 <- make_synthetic_brfss(n_per_year = 300, years = 2018)
+df_2019 <- make_synthetic_brfss(n_per_year = 300, years = 2019)
+
+df_all <- dplyr::bind_rows(df_2018, df_2019)
+
+cat("Years in pooled data:", sort(unique(df_all$year)), "\n")
+cat("Total rows:", nrow(df_all), "\n")
+cat("Rows per year:\n")
+print(table(df_all$year))
+```
+
+---
+
+## Module Summary
+
+You have learned:
+
+- BRFSS variable names **change across years** — never hard-code them
+- The `find_var()` function resolves variable names from a priority list of candidates
+- `haven::read_xpt()` + `janitor::clean_names()` loads BRFSS XPT files
+- `read_year_min()` extracts only the variables we need, creating a standardized schema
+- An **audit table** documents which raw variable name was used per year
+- **RDS caching** with a version string avoids repeated processing of large files
+
+**Next:** Module 3 covers harmonizing and recoding variables into consistent analysis-ready categories across all 14 years.

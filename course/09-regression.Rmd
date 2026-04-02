@@ -1,0 +1,596 @@
+---
+title: "Module 9: Regression Modeling — Prevalence Ratios and Effect Modification"
+output:
+  learnr::tutorial:
+    progressive: true
+    allow_skip: true
+    theme: "flatly"
+runtime: shiny_prerendered
+description: "Fit adjusted Prevalence Ratio models with svyglm(), test interaction terms, and interpret Year × Race and Year × Sex effect modification."
+---
+
+```{r setup, include=FALSE}
+library(learnr)
+library(tidyverse)
+library(survey)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+tutorial_options(exercise.timelimit = 180)
+options(survey.lonely.psu = "adjust")
+
+source("synthetic_brfss.R", local = TRUE)
+
+df_all <- make_synthetic_brfss(n_per_year = 1500, years = 2011:2024) |>
+  dplyr::mutate(
+    any_binge_cdc = dplyr::case_when(
+      rfbing5 == 2 ~ 1L, rfbing5 == 1 ~ 0L, TRUE ~ NA_integer_
+    ),
+    sex_f = factor(sex, levels = c(2, 1), labels = c("Female", "Male")),
+    age7 = dplyr::case_when(
+      age5 %in% 1:2  ~ "18-29", age5 %in% 3:4  ~ "30-39",
+      age5 %in% 5:6  ~ "40-49", age5 %in% 7:8  ~ "50-59",
+      age5 %in% 9:10 ~ "60-69", age5 %in% 11:12 ~ "70-79",
+      age5 == 13     ~ "80+",   TRUE ~ NA_character_
+    ) |> factor(levels = c("18-29","30-39","40-49","50-59","60-69","70-79","80+")),
+    race6 = dplyr::recode(as.integer(imprace),
+      `1` = "NH White",  `2` = "NH Black",   `3` = "NH AI/AN",
+      `4` = "NH Asian",  `5` = "NH Asian",   `6` = "NH Other",
+      .default = NA_character_
+    ) |> factor(levels = c("NH White","NH Black","NH AI/AN","NH Asian","NH Other")),
+    educ4 = dplyr::recode(as.integer(educag),
+      `1` = "<HS", `2` = "HS/GED", `3` = "Some college/AA", `4` = "College",
+      .default = NA_character_
+    ) |> factor(levels = c("<HS","HS/GED","Some college/AA","College"), ordered = TRUE),
+    income3 = dplyr::recode(as.integer(income2),
+      `1` = "<$25k", `2` = "<$25k", `3` = "<$25k", `4` = "<$25k",
+      `5` = "$25-<50k", `6` = "$25-<50k",
+      `7` = ">=50k", `8` = ">=50k",
+      .default = "Unknown"
+    ) |> factor(levels = c("<$25k","$25-<50k",">=50k","Unknown")),
+    employ3 = dplyr::recode(as.integer(employ1),
+      `1` = "Employed",   `2` = "Employed",
+      `3` = "Unemployed", `4` = "Unemployed",
+      `5` = "NILF", `6` = "NILF", `7` = "NILF", `8` = "NILF",
+      .default = "Unknown"
+    ) |> factor(levels = c("Employed","Unemployed","NILF","Unknown")),
+    marital2 = dplyr::recode(as.integer(marital),
+      `1` = "Married/Partnered", `6` = "Married/Partnered",
+      `2` = "Not married", `3` = "Not married",
+      `4` = "Not married", `5` = "Not married",
+      .default = "Unknown"
+    ) |> factor(levels = c("Married/Partnered","Not married","Unknown")),
+    insured = dplyr::recode(as.integer(hlthpln1),
+      `1` = "Yes", `2` = "No", .default = "Unknown"
+    ) |> factor(levels = c("Yes","No","Unknown")),
+    strata_id = as.integer(interaction(year, strata, drop = TRUE)),
+    psu_id    = as.integer(interaction(year, psu,    drop = TRUE)),
+    year_lin  = as.numeric(year) - 2011,
+    covid     = as.integer(year >= 2020),
+    is_current = dplyr::case_when(
+      alcday5 %in% c(777, 999) ~ NA,
+      alcday5 == 888 ~ FALSE,
+      TRUE ~ TRUE
+    ),
+    region = dplyr::case_when(
+      state %in% c(7, 23, 25, 33, 44, 50, 34, 36, 42) ~ "Northeast",
+      state %in% c(17, 18, 26, 39, 55, 19, 20, 27, 29, 31, 38, 46) ~ "Midwest",
+      state %in% c(10, 11, 12, 13, 24, 37, 45, 51, 54, 1, 21, 28, 47,
+                    5, 22, 40, 48) ~ "South",
+      TRUE ~ "West"
+    ) |> factor(levels = c("Northeast","Midwest","South","West"))
+  ) |>
+  dplyr::filter(!is.na(sex_f), !is.na(age7), !is.na(race6))
+
+des_all <- survey::svydesign(
+  id = ~psu_id, strata = ~strata_id, weights = ~wt, data = df_all, nest = TRUE
+)
+des_curr <- subset(des_all, is_current == TRUE)
+```
+
+## Why Prevalence Ratios, Not Odds Ratios?
+
+For common outcomes (prevalence > 10%), **odds ratios overestimate the relative risk**. Binge drinking in the U.S. has a prevalence of ~18–23% — far too common for ORs to approximate RRs.
+
+**Prevalence Ratios (PRs)** are directly interpretable: a PR of 1.10 means 10% higher prevalence. We estimate them using **Poisson regression with a log link** — the `quasipoisson` family avoids the distributional assumptions of true Poisson while fitting the same model.
+
+| Model family | When to use | Dispersion |
+|---|---|---|
+| `binomial(logit)` | Logistic regression → ORs | Fixed at 1 |
+| `poisson(log)` | PR when N is large, no overdispersion | Fixed at 1 |
+| `quasipoisson(log)` | PR with overdispersion correction | Estimated φ |
+
+We always use `quasipoisson` for BRFSS because the massive sample size and complex design inflate residual variance beyond Poisson expectations.
+
+---
+
+## Building the Primary PR Model
+
+The primary model adjusts for time (linear year), demographics, and census region:
+
+```{r pr-model-def}
+# Primary adjusted PR model — current drinkers
+# Outcome: any binge drinking (0/1)
+# Time: year_lin = year - 2011 (0 at baseline, 13 at 2024)
+# Covariates: sex, age7, race6, educ4, income3, employ3, marital2, insured, region
+```
+
+```{r pr-model-fit, exercise=TRUE}
+fit_pr_curr <- survey::svyglm(
+  any_binge_cdc ~ year_lin + sex_f + age7 + race6 +
+                  educ4 + income3 + employ3 + marital2 +
+                  insured + factor(region),
+  design = des_curr,
+  family = quasipoisson(link = "log")
+)
+
+cat("Model converged:", fit_pr_curr$converged, "\n")
+cat("Outcome obs used:", nrow(fit_pr_curr$data), "\n")
+cat("Terms in model:", length(coef(fit_pr_curr)), "\n")
+```
+
+---
+
+## Extracting and Formatting PR Tables
+
+```{r mk-pr-table-def}
+mk_pr_table <- function(fit, label = NULL) {
+  co <- stats::coef(fit)
+  ci <- stats::confint(fit)
+  sm <- summary(fit)$coefficients
+
+  out <- tibble::tibble(
+    term = names(co),
+    PR   = exp(co),
+    LCL  = exp(ci[, 1]),
+    UCL  = exp(ci[, 2]),
+    p    = sm[, 4]
+  ) |>
+    dplyr::mutate(
+      ci_fmt = sprintf("%.2f (%.2f-%.2f)", PR, LCL, UCL),
+      sig    = dplyr::case_when(
+        p < 0.001 ~ "***",
+        p < 0.01  ~ "**",
+        p < 0.05  ~ "*",
+        p < 0.10  ~ ".",
+        TRUE      ~ ""
+      )
+    )
+
+  if (!is.null(label)) out <- dplyr::mutate(out, model = label, .before = 1)
+  out
+}
+```
+
+```{r pr-table-print, exercise=TRUE}
+fit_pr_curr <- survey::svyglm(
+  any_binge_cdc ~ year_lin + sex_f + age7 + race6 +
+                  educ4 + income3 + employ3 + marital2 +
+                  insured + factor(region),
+  design = des_curr,
+  family = quasipoisson(link = "log")
+)
+
+pr_table <- mk_pr_table(fit_pr_curr)
+
+# Show key rows
+pr_table |>
+  dplyr::filter(term %in% c(
+    "year_lin", "sex_fMale",
+    "race6NH Black", "race6NH AI/AN",
+    "educ4.L", "income3<$25k"
+  )) |>
+  dplyr::select(term, ci_fmt, p, sig) |>
+  print()
+```
+
+**Interpreting `year_lin`:** A PR of, say, 1.012 means binge drinking prevalence among current drinkers increased by ~1.2% per year on average, after adjusting for all covariates.
+
+---
+
+## COVID Sensitivity Analysis
+
+The COVID-19 pandemic disrupted BRFSS data collection in 2020 (reduced response rates, changed drinking behaviors). We add a `covid` indicator to test whether the trend differs pre/post-2020:
+
+```{r covid-sensitivity, exercise=TRUE}
+des_curr <- stats::update(des_curr, covid = as.integer(year >= 2020))
+
+fit_pr_covid <- survey::svyglm(
+  any_binge_cdc ~ year_lin + covid + sex_f + age7 + race6 +
+                  educ4 + income3 + employ3 + marital2 +
+                  insured + factor(region),
+  design = des_curr,
+  family = quasipoisson(link = "log")
+)
+
+# Compare year_lin coefficient with and without COVID term
+fit_no_covid <- survey::svyglm(
+  any_binge_cdc ~ year_lin + sex_f + age7 + race6 +
+                  educ4 + income3 + employ3 + marital2 +
+                  insured + factor(region),
+  design = des_curr,
+  family = quasipoisson(link = "log")
+)
+
+tibble::tibble(
+  model        = c("Without COVID term", "With COVID term"),
+  PR_year      = c(exp(coef(fit_no_covid)["year_lin"]),
+                   exp(coef(fit_pr_covid)["year_lin"])),
+  PR_covid_dum = c(NA, exp(coef(fit_pr_covid)["covid"]))
+) |>
+  dplyr::mutate(across(where(is.numeric), \(x) round(x, 4))) |>
+  print()
+```
+
+If the `year_lin` coefficient changes substantially after adding the COVID term, the trend estimate was sensitive to the 2020 disruption.
+
+---
+
+## Race × Time Interaction
+
+Does the time trend differ across racial/ethnic groups? We test this with an interaction between `year_lin` and `race6`:
+
+```{r race-time-interaction, exercise=TRUE}
+fit_race_time <- survey::svyglm(
+  any_binge_cdc ~ year_lin * race6 + sex_f + age7 +
+                  educ4 + income3 + employ3 + marital2 +
+                  insured + factor(region),
+  design = des_curr,
+  family = quasipoisson(link = "log")
+)
+
+# Joint Wald test for all Race × Year interaction terms
+wt_race <- survey::regTermTest(fit_race_time, ~ year_lin:race6)
+
+tibble::tibble(
+  test       = "Year x Race interaction",
+  chisq      = round(unname(wt_race$test), 3),
+  df         = unname(wt_race$df),
+  p_value    = round(unname(wt_race$p), 4)
+)
+```
+
+---
+
+## Extracting Race-Specific Annual PRs
+
+After fitting the interaction model, compute the **stratum-specific annual PR** for each race group using the delta method for correct standard errors:
+
+```{r race-specific-prs, exercise=TRUE}
+fit_race_time <- survey::svyglm(
+  any_binge_cdc ~ year_lin * race6 + sex_f + age7 +
+                  educ4 + income3 + employ3 + marital2 +
+                  insured + factor(region),
+  design = des_curr,
+  family = quasipoisson(link = "log")
+)
+
+co <- stats::coef(fit_race_time)
+vc <- stats::vcov(fit_race_time)
+race_levels <- levels(des_curr$variables$race6)
+
+race_annual_pr <- purrr::map_dfr(race_levels, function(r) {
+  if (r == "NH White") {
+    # Reference group: annual PR = exp(beta_year_lin)
+    b  <- unname(co["year_lin"])
+    se <- sqrt(vc["year_lin", "year_lin"])
+  } else {
+    # Other groups: annual PR = exp(beta_year_lin + beta_interaction)
+    int_term <- paste0("year_lin:race6", r)
+    if (!int_term %in% names(co)) {
+      return(tibble::tibble(race = r, PR_per_year = NA, LCL = NA, UCL = NA, p = NA))
+    }
+    b  <- unname(co["year_lin"]) + unname(co[int_term])
+    se <- sqrt(
+      vc["year_lin", "year_lin"] +
+      vc[int_term,   int_term]   +
+      2 * vc["year_lin", int_term]
+    )
+  }
+  tibble::tibble(
+    race        = r,
+    PR_per_year = round(exp(b), 4),
+    LCL         = round(exp(b - 1.96 * se), 4),
+    UCL         = round(exp(b + 1.96 * se), 4),
+    p           = round(2 * (1 - pnorm(abs(b / se))), 4)
+  )
+})
+
+print(race_annual_pr)
+```
+
+**How to read this:** Each row gives the average annual multiplicative change in binge drinking prevalence for that race group, holding all other covariates constant. A PR of 1.015 means ~1.5% increase per year; 0.990 means ~1% decrease per year.
+
+---
+
+## Year × Sex Interaction
+
+We also test whether trends differ by sex:
+
+```{r sex-time-interaction, exercise=TRUE}
+fit_sex_time <- survey::svyglm(
+  any_binge_cdc ~ year_lin * sex_f + age7 + race6 +
+                  educ4 + income3 + employ3 + marital2 +
+                  insured + factor(region),
+  design = des_curr,
+  family = quasipoisson(link = "log")
+)
+
+# Joint Wald test
+wt_sex <- survey::regTermTest(fit_sex_time, ~ year_lin:sex_f)
+cat("Year x Sex interaction test:\n")
+cat("  Chi-sq:", round(unname(wt_sex$test), 3), "\n")
+cat("  df:    ", unname(wt_sex$df), "\n")
+cat("  p:     ", round(unname(wt_sex$p), 4), "\n\n")
+
+# Stratum-specific annual PRs
+co <- stats::coef(fit_sex_time)
+vc <- stats::vcov(fit_sex_time)
+
+# Female (reference level)
+b_f  <- unname(co["year_lin"])
+se_f <- sqrt(vc["year_lin", "year_lin"])
+
+# Male
+b_m  <- unname(co["year_lin"]) + unname(co["year_lin:sex_fMale"])
+se_m <- sqrt(
+  vc["year_lin",         "year_lin"] +
+  vc["year_lin:sex_fMale", "year_lin:sex_fMale"] +
+  2 * vc["year_lin",     "year_lin:sex_fMale"]
+)
+
+tibble::tibble(
+  sex         = c("Female", "Male"),
+  PR_per_year = round(exp(c(b_f, b_m)), 4),
+  LCL         = round(exp(c(b_f - 1.96*se_f, b_m - 1.96*se_m)), 4),
+  UCL         = round(exp(c(b_f + 1.96*se_f, b_m + 1.96*se_m)), 4)
+)
+```
+
+```{r interaction-quiz}
+quiz(
+  question(
+    "In the interaction model `any_binge ~ year_lin * sex_f`, what does `year_lin:sex_fMale` represent?",
+    answer("The main effect of year for males"),
+    answer("The difference in the annual trend for males compared to females (the reference)", correct = TRUE),
+    answer("The prevalence ratio for males vs females"),
+    answer("The interaction between COVID and sex"),
+    allow_retry = TRUE
+  )
+)
+```
+
+---
+
+## Secondary Outcome: High-Intensity Binge
+
+High-intensity binge drinking is defined as consuming ≥8 drinks on an occasion (women) or ≥10 drinks (men):
+
+```{r hi-binge-model, exercise=TRUE}
+des_curr <- stats::update(
+  des_curr,
+  hi_binge = dplyr::case_when(
+    is.na(maxdrnks) | is.na(sex)           ~ NA_integer_,
+    as.integer(sex) == 2L & maxdrnks >= 8  ~ 1L,
+    as.integer(sex) == 1L & maxdrnks >= 10 ~ 1L,
+    TRUE                                   ~ 0L
+  )
+)
+
+fit_hi <- survey::svyglm(
+  hi_binge ~ year_lin + sex_f + age7 + race6 +
+             educ4 + income3 + employ3 + marital2 +
+             insured + factor(region),
+  design = des_curr,
+  family = quasipoisson(link = "log")
+)
+
+mk_pr_table(fit_hi) |>
+  dplyr::filter(term %in% c("year_lin", "sex_fMale", "race6NH Black")) |>
+  dplyr::select(term, ci_fmt, p, sig)
+```
+
+---
+
+## Model Diagnostics: Dispersion
+
+For `quasipoisson` models, the **dispersion parameter φ** (phi) indicates how much residual variance exceeds the Poisson mean-variance relationship. Values near 1 suggest Poisson is adequate; large values (>5) may warrant negative binomial.
+
+```{r dispersion-check, exercise=TRUE}
+fit_main <- survey::svyglm(
+  any_binge_cdc ~ year_lin + sex_f + age7 + race6 +
+                  educ4 + income3 + employ3 + marital2 +
+                  insured + factor(region),
+  design = des_curr,
+  family = quasipoisson(link = "log")
+)
+
+# Pearson dispersion
+rp  <- residuals(fit_main, type = "pearson")
+df  <- fit_main$df.residual
+phi <- sum(rp^2, na.rm = TRUE) / df
+
+cat("Pearson dispersion (phi):", round(phi, 3), "\n")
+cat("Residual df:             ", df, "\n")
+cat("Family:                  ",
+    paste0(class(fit_main$family)[1], " (",
+           fit_main$family$family, ", link=",
+           fit_main$family$link, ")"), "\n\n")
+cat("Interpretation:\n")
+cat("  phi ~ 1  → Poisson assumptions reasonable\n")
+cat("  phi >> 1 → overdispersion present (quasipoisson handles this)\n")
+cat("  phi << 1 → underdispersion (rare, investigate data)\n")
+```
+
+---
+
+## Comparing Multiple Models
+
+In a real analysis, we fit and compare several model variants:
+
+```{r model-comparison, exercise=TRUE}
+# Fit four models
+fit_curr_lin   <- survey::svyglm(
+  any_binge_cdc ~ year_lin + sex_f + age7 + race6 + educ4 + income3 +
+                  employ3 + marital2 + insured + factor(region),
+  des_curr, family = quasipoisson(link = "log")
+)
+
+des_curr_covid <- stats::update(des_curr, covid = as.integer(year >= 2020))
+fit_curr_covid <- survey::svyglm(
+  any_binge_cdc ~ year_lin + covid + sex_f + age7 + race6 + educ4 +
+                  income3 + employ3 + marital2 + insured + factor(region),
+  des_curr_covid, family = quasipoisson(link = "log")
+)
+
+fit_all_lin <- survey::svyglm(
+  any_binge_cdc ~ year_lin + sex_f + age7 + race6 + educ4 + income3 +
+                  employ3 + marital2 + insured + factor(region),
+  des_all, family = quasipoisson(link = "log")
+)
+
+# Compare year_lin PR across models
+tibble::tibble(
+  model        = c("Current drinkers, linear year",
+                   "Current drinkers + COVID term",
+                   "All adults, linear year"),
+  PR_year      = c(exp(coef(fit_curr_lin)["year_lin"]),
+                   exp(coef(fit_curr_covid)["year_lin"]),
+                   exp(coef(fit_all_lin)["year_lin"])),
+  p_year       = c(summary(fit_curr_lin)$coefficients["year_lin", 4],
+                   summary(fit_curr_covid)$coefficients["year_lin", 4],
+                   summary(fit_all_lin)$coefficients["year_lin", 4])
+) |>
+  dplyr::mutate(
+    PR_year = round(PR_year, 4),
+    p_year  = round(p_year, 4)
+  ) |>
+  print()
+```
+
+---
+
+## State-Level Trend PRs
+
+For each state, we fit a simple weighted log-linear regression using the age-adjusted estimates and their SEs:
+
+```{r state-trend-pr}
+# Pattern: fit one trend model per state using aggregated estimates
+fit_state_trend <- function(df_state_prop) {
+  # df_state_prop: columns state_code, year, est, lcl, ucl
+  df_state_prop |>
+    dplyr::mutate(
+      se_log   = (log(ucl) - log(lcl)) / (2 * 1.96),
+      year_lin = year - min(year)
+    ) |>
+    dplyr::filter(!is.na(est), est > 0, !is.na(se_log), se_log > 0) |>
+    dplyr::group_by(state_code) |>
+    dplyr::group_map(function(dd, key) {
+      if (nrow(dd) < 5) return(NULL)
+      fit <- tryCatch(
+        lm(log(est) ~ year_lin, data = dd, weights = 1 / (se_log^2)),
+        error = function(e) NULL
+      )
+      if (is.null(fit)) return(NULL)
+      co <- summary(fit)$coefficients["year_lin", ]
+      b  <- unname(co["Estimate"])
+      se <- unname(co["Std. Error"])
+      tibble::tibble(
+        state_code  = key$state_code,
+        PR_per_year = exp(b),
+        LCL         = exp(b - 1.96 * se),
+        UCL         = exp(b + 1.96 * se),
+        p_two       = 2 * (1 - pnorm(abs(b / se)))
+      )
+    }) |>
+    dplyr::bind_rows() |>
+    dplyr::mutate(p_adj_bh = p.adjust(p_two, method = "BH"))
+}
+```
+
+```{r state-trend-example, exercise=TRUE}
+# Simulate state-level age-adjusted estimates
+set.seed(42)
+state_prev_sim <- tidyr::expand_grid(state_code = 1:20, year = 2011:2024) |>
+  dplyr::mutate(
+    est = pmax(0.05, 0.18 + 0.003 * (year - 2011) +
+               rnorm(dplyr::n(), 0, 0.015) +
+               rep(rnorm(20, 0, 0.04), each = 14)),
+    se  = runif(dplyr::n(), 0.008, 0.018),
+    lcl = pmax(0.001, est - 1.96 * se),
+    ucl = est + 1.96 * se
+  )
+
+state_trends <- fit_state_trend(state_prev_sim)
+state_trends |>
+  dplyr::arrange(dplyr::desc(PR_per_year)) |>
+  dplyr::mutate(across(c(PR_per_year, LCL, UCL), \(x) round(x, 4)),
+                p_adj_bh = round(p_adj_bh, 3)) |>
+  dplyr::slice_head(n = 8) |>
+  print()
+```
+
+---
+
+## Exporting Results
+
+```{r export-pr, eval=FALSE}
+# Export all PR tables
+readr::write_csv(mk_pr_table(fit_pr_curr_lin),
+  file.path(tab_dir, "adj_PR_currentdrinkers_linetime_regionFE.csv"))
+
+readr::write_csv(mk_pr_table(fit_pr_curr_covid),
+  file.path(tab_dir, "adj_PR_currentdrinkers_linetime_covidSens_regionFE.csv"))
+
+readr::write_csv(mk_pr_table(fit_pr_all_lin),
+  file.path(tab_dir, "adj_PR_alladults_linetime_regionFE.csv"))
+
+# Interaction test results
+readr::write_csv(race_time_test,
+  file.path(tab_dir, "adj_PR_interaction_YearByRace_jointWald.csv"))
+
+readr::write_csv(race_annual_pr,
+  file.path(tab_dir, "adj_PR_TrendByRace_annualPR.csv"))
+
+# Model diagnostics
+readr::write_csv(diag_tab,
+  file.path(tab_dir, "model_diagnostics_phi.csv"))
+```
+
+---
+
+## Module Summary
+
+You have learned:
+
+- **Prevalence Ratios** (not odds ratios) are appropriate for common outcomes; use `quasipoisson(link = "log")` with `svyglm()`
+- `exp(coef())` converts log-link coefficients to PRs; `exp(confint())` gives 95% CI
+- `mk_pr_table()` extracts a clean, publication-ready table from any `svyglm` fit
+- **COVID sensitivity:** adding a binary `covid` indicator tests whether the overall trend changes
+- **Interaction models** (`year_lin * race6`) test whether trends differ across subgroups
+- **Delta method** manually combines beta coefficients and variance–covariance matrix entries to get stratum-specific slopes from interaction models
+- `survey::regTermTest()` performs a joint Wald test for sets of interaction terms
+- **State-level PRs** are estimated by fitting weighted log-linear models to the state-level aggregated estimates
+
+---
+
+## Course Complete
+
+You have now covered the full analysis pipeline:
+
+| Module | Topic |
+|--------|-------|
+| 1 | BRFSS overview, binge drinking definition, survey design |
+| 2 | Loading XPT files, `find_var()`, auditing variable sources |
+| 3 | Recoding outcomes, age, race/ethnicity, education, income |
+| 4 | Building `svydesign` objects, pooling years, subsetting |
+| 5 | `svymean()`, `svyby()`, annual loops, BH correction |
+| 6 | Year 2000 standardization, `svystandardize()` |
+| 7 | Stratified trends, state rankings, joinpoint export |
+| 8 | ggplot2 trend plots, ribbons, facets, heatmaps |
+| 9 | PR models, COVID sensitivity, interaction tests, state PRs |
+
+**Next steps with real data:**
+
+1. Download BRFSS LLCP files from the CDC website
+2. Place them in `data/raw/<year>/LLCP<year>.XPT` (or `.XPT_`)
+3. Set `PROJ_DIR` in `main_run_2011_2024.R`
+4. Run the full pipeline — the cache layer will process each year once and save `.rds` files
