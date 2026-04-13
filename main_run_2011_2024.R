@@ -296,49 +296,50 @@ recode_analysis <- function(d){
       hisp_i    = as_int(hisp_raw),
       
       race4 = dplyr::case_when(
-        # Hispanic FIRST — always comes from hispanc/hispanc2, not imprace
-        !is.na(hisp_i) & hisp_i == 1L ~ "Hispanic",
-        # Then imprace for NH categories (codes 1-6, no 8)
-        !is.na(imprace_i) & imprace_i == 1L ~ "NH White",
-        !is.na(imprace_i) & imprace_i == 2L ~ "NH Black",
-        !is.na(imprace_i) & imprace_i %in% c(3L,4L,5L,6L,7L) ~ "NH Other",
-        # fallback to RACE1 when imprace missing
-        is.na(imprace_i) & !is.na(race1_i) & race1_i == 1L ~ "NH White",
-        is.na(imprace_i) & !is.na(race1_i) & race1_i == 2L ~ "NH Black",
-        is.na(imprace_i) & !is.na(race1_i) & race1_i %in% c(3L,4L,5L,6L,7L) ~ "NH Other",
-        # fallback to mrace2/mrace1
-        is.na(imprace_i) & is.na(race1_i) & !is.na(mrace2_i) & mrace2_i == 10L ~ "NH White",
-        is.na(imprace_i) & is.na(race1_i) & !is.na(mrace2_i) & mrace2_i == 20L ~ "NH Black",
-        is.na(imprace_i) & is.na(race1_i) & !is.na(mrace2_i) & mrace2_i %in% c(30L,40L,50L,51L,52L,53L,54L,60L,70L) ~ "NH Other",
+        # Corrected _IMPRACE mapping
+        !is.na(hisp_i) & hisp_i == 1L              ~ "Hispanic",
+        !is.na(imprace_i) & imprace_i == 1L        ~ "NH White",
+        !is.na(imprace_i) & imprace_i == 2L        ~ "NH Black",
+        !is.na(imprace_i) & imprace_i == 3L        ~ "NH Other",
+        !is.na(imprace_i) & imprace_i == 4L        ~ "NH Other",
+        !is.na(imprace_i) & imprace_i == 5L        ~ "Hispanic",
+        !is.na(imprace_i) & imprace_i == 6L        ~ "NH Other",
+        # fallback to RACE1 — only when both imprace and mrace1 missing
+        is.na(imprace_i) & is.na(mrace1_i) & !is.na(race1_i) & race1_i == 1L ~ "NH White",
+        is.na(imprace_i) & is.na(mrace1_i) & !is.na(race1_i) & race1_i == 2L ~ "NH Black",
+        is.na(imprace_i) & is.na(mrace1_i) & !is.na(race1_i) & race1_i %in% c(3L,4L,5L,6L,7L) ~ "NH Other",
+        # fallback to mrace2 — only when imprace, mrace1, and race1 all missing
+        is.na(imprace_i) & is.na(mrace1_i) & is.na(race1_i) & !is.na(mrace2_i) & mrace2_i == 10L ~ "NH White",
+        is.na(imprace_i) & is.na(mrace1_i) & is.na(race1_i) & !is.na(mrace2_i) & mrace2_i == 20L ~ "NH Black",
+        is.na(imprace_i) & is.na(mrace1_i) & is.na(race1_i) & !is.na(mrace2_i) & mrace2_i %in% c(30L,40L,50L,51L,52L,53L,54L,60L,70L) ~ "NH Other",
         TRUE ~ NA_character_
       ),
       
       # ---------- NEW: Detailed race for national reporting (6 levels) ----------
       race6_nat = dplyr::case_when(
+        # Hispanic FIRST
         !is.na(hisp_i) & hisp_i == 1L ~ "Hispanic",
+        # _IMPRACE — corrected coding
         !is.na(imprace_i) & imprace_i == 1L ~ "NH White",
         !is.na(imprace_i) & imprace_i == 2L ~ "NH Black",
-        !is.na(imprace_i) & imprace_i == 3L ~ "NH AI/AN",
-        !is.na(imprace_i) & imprace_i %in% c(4L,5L) ~ "NH Asian/NHPI",
-        !is.na(imprace_i) & imprace_i %in% c(6L,7L) ~ "NH Other/Multiracial",
-        # mrace1 BEFORE race1 — gives detailed categories for 2015-2016
-        # In recode_analysis(), replace the mrace1_i conditions in race6_nat with:
+        !is.na(imprace_i) & imprace_i == 3L ~ "NH Asian/NHPI",
+        !is.na(imprace_i) & imprace_i == 4L ~ "NH AI/AN",
+        !is.na(imprace_i) & imprace_i == 5L ~ "Hispanic",
+        !is.na(imprace_i) & imprace_i == 6L ~ "NH Other/Multiracial",
+        # mrace1/race fallback for 2015-2016
         is.na(imprace_i) & !is.na(mrace1_i) & mrace1_i == 1L ~ "NH White",
         is.na(imprace_i) & !is.na(mrace1_i) & mrace1_i == 2L ~ "NH Black",
         is.na(imprace_i) & !is.na(mrace1_i) & mrace1_i == 3L ~ "NH AI/AN",
         is.na(imprace_i) & !is.na(mrace1_i) & mrace1_i %in% c(4L,5L) ~ "NH Asian/NHPI",
         is.na(imprace_i) & !is.na(mrace1_i) & mrace1_i == 6L ~ "NH Other/Multiracial",
         is.na(imprace_i) & !is.na(mrace1_i) & mrace1_i == 7L ~ "NH Other/Multiracial",
-        # Code 8 = Hispanic in _RACE — already handled by hisp_i check above
-        # but add explicit handler to prevent fallthrough to NA
         is.na(imprace_i) & !is.na(mrace1_i) & mrace1_i == 8L ~ "Hispanic",
-        # Code 9 = DK/Refused → NA (no handler needed, falls to TRUE ~ NA)
-        # race1/racegr3 last resort
-        !is.na(race1_i) & race1_i == 1L ~ "NH White",
-        !is.na(race1_i) & race1_i == 2L ~ "NH Black",
-        !is.na(mrace2_i) & mrace2_i == 30L ~ "NH AI/AN",
-        !is.na(mrace2_i) & mrace2_i %in% c(40L,50L,51L,52L,53L,54L) ~ "NH Asian/NHPI",
-        !is.na(mrace2_i) & mrace2_i %in% c(60L,70L) ~ "NH Other/Multiracial",
+        # Last resort — only when both imprace and mrace1 are missing
+        is.na(imprace_i) & is.na(mrace1_i) & !is.na(race1_i) & race1_i == 1L ~ "NH White",
+        is.na(imprace_i) & is.na(mrace1_i) & !is.na(race1_i) & race1_i == 2L ~ "NH Black",
+        is.na(imprace_i) & is.na(mrace1_i) & !is.na(mrace2_i) & mrace2_i == 30L ~ "NH AI/AN",
+        is.na(imprace_i) & is.na(mrace1_i) & !is.na(mrace2_i) & mrace2_i %in% c(40L,50L,51L,52L,53L,54L) ~ "NH Asian/NHPI",
+        is.na(imprace_i) & is.na(mrace1_i) & !is.na(mrace2_i) & mrace2_i %in% c(60L,70L) ~ "NH Other/Multiracial",
         TRUE ~ NA_character_
       )
       
@@ -404,7 +405,7 @@ read_year_min <- function(yr, path){
   nm_rfbing <- find_var(df, c("_rfbing6","rfbing6","_rfbing5","rfbing5","_rfbing4","rfbing4"))
   
   nm_maxd   <- find_var(df, c("maxdrnks","_maxdrnks"))
-  nm_aved   <- find_var(df, c("avedrnk3","averdrnk3","avedrnk2","_avedrnk", "AVEDRNK4"))
+  nm_aved   <- find_var(df, c("avedrnk3","averdrnk3","avedrnk2","_avedrnk", "avedrnk4"))
 
   # demographics
   nm_sex    <- find_var(df, c("sex","sex1","sexvar","rcsgendr"))
@@ -431,8 +432,10 @@ read_year_min <- function(yr, path){
   nm_incomg  <- find_var(df, c("_incomg","incomg"))
   nm_employ1 <- find_var(df, c("employ1","_employ1","employ"))
   nm_marital <- find_var(df, c("marital","_marital"))
-  nm_hlthpln <- find_var(df, c("hlthpln1","_hlthpln1","hlthpln2", "_HLTHPLN", "_HLTHPL2", "hlthpln", "_hlthpln", "_HLTHPL1"))
-  
+  nm_hlthpln <- find_var(df, c("hlthpln1","_hlthpln1","hlthpln2",
+                               "hlthpln","_hlthpln",
+                               "x_hlthpl1","x_hlthpln","x_hlthpl2",
+                               "hlthpl1","hlthpl2"))  
 
   # required inputs to proceed
   must <- c(nm_wt, nm_strata, nm_psu, nm_alcday, nm_binge, nm_sex, nm_age5)
@@ -489,7 +492,7 @@ read_year_min <- function(yr, path){
 # ===== CACHE VERSIONING =====
 # Put this near the top (after PROJ_DIR). Bump CACHE_VER anytime recode logic changes.
 
-CACHE_VER <- "v2026-01-16_popTrend_racefix2.5_race2015fix"
+CACHE_VER <- "v2026-01-16_popTrend_racefix3.5_varfixes"
 
 read_year_cached <- function(yr, xpt_path){
   cache_dir <- file.path(PROJ_DIR, "data/cache")
@@ -572,8 +575,10 @@ audit_find <- function(df){
     employ1 = find_var(df, c("employ1","_employ1","employ")),
     marital = find_var(df, c("marital","_marital")),
     
-    hlthpln = find_var(df, c("hlthpln1","_hlthpln1","hlthpln2", "_HLTHPLN", "_HLTHPL2", "hlthpln", "_hlthpln", "_HLTHPL1"))
-  )
+    hlthpln = find_var(df, c("hlthpln1","_hlthpln1","hlthpln2",
+                             "hlthpln","_hlthpln",
+                             "x_hlthpl1","x_hlthpln","x_hlthpl2",
+                             "hlthpl1","hlthpl2"))  )
 }
 aud <- purrr::map2_dfr(
   yrs, paths,
@@ -910,6 +915,7 @@ des_all <- stats::update(
   educ4      = factor(educ4, levels = c("<HS","HS/GED","Some college/AA","College"), ordered = TRUE),
   income3    = factor(income3, levels = c("<$25k","$25–<50k","≥$50k","Unknown"), ordered = TRUE),
   income6    = factor(income6, levels = c("<$15k","$15–<25k","$25–<35k","$35–<50k","$50–<75k","≥$75k","Unknown"), ordered = TRUE),
+  income_hi4 = factor(income_hi4, levels = c("<$100k","$100–<150k","$150–<200k","≥$200k","Unknown"), ordered = TRUE), 
   employ3    = factor(employ3, levels = c("Employed","Unemployed","NILF","Unknown")),
   marital2   = factor(marital2, levels = c("Married/Partnered","Not married","Unknown")),
   marital3   = factor(marital3, levels = c("Married/Partnered","Never married","Previously married","Unknown")),
@@ -1076,7 +1082,7 @@ prev_all_prop_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
     na.rm = TRUE
   )
   
-  ci <- suppressWarnings(confint(out))
+  ci <- (confint(out))
   
   tibble::tibble(
     year = as.integer(yr),
@@ -1945,6 +1951,54 @@ readr::write_csv(
   file.path(tab_dir, "main_prev_any_binge_current_by_educ4_AGEADJ2000_CI_pct.csv")
 )
 
+# ---- Joinpoint exports — by sex ----
+
+# All adults
+prev_sex_all_ageadj %>%
+  dplyr::mutate(se = (ucl - lcl) / (2 * 1.96)) %>%
+  dplyr::select(sex, year, est, se) %>%
+  dplyr::group_by(sex) %>%
+  dplyr::group_walk(~ readr::write_csv(
+    .x %>% dplyr::select(year, est, se),
+    file.path(tab_dir, paste0("joinpoint_input_alladults_sex_",
+                              gsub("[^A-Za-z0-9]", "_", .y$sex), ".csv"))
+  ))
+
+# Current drinkers
+prev_sex_curr_ageadj %>%
+  dplyr::mutate(se = (ucl - lcl) / (2 * 1.96)) %>%
+  dplyr::select(sex, year, est, se) %>%
+  dplyr::group_by(sex) %>%
+  dplyr::group_walk(~ readr::write_csv(
+    .x %>% dplyr::select(year, est, se),
+    file.path(tab_dir, paste0("joinpoint_input_current_sex_",
+                              gsub("[^A-Za-z0-9]", "_", .y$sex), ".csv"))
+  ))
+
+# ---- Joinpoint exports — by education ----
+
+# All adults
+prev_educ_all_ageadj %>%
+  dplyr::mutate(se = (ucl - lcl) / (2 * 1.96)) %>%
+  dplyr::select(educ4, year, est, se) %>%
+  dplyr::group_by(educ4) %>%
+  dplyr::group_walk(~ readr::write_csv(
+    .x %>% dplyr::select(year, est, se),
+    file.path(tab_dir, paste0("joinpoint_input_alladults_educ_",
+                              gsub("[^A-Za-z0-9]", "_", .y$educ4), ".csv"))
+  ))
+
+# Current drinkers
+prev_educ_curr_ageadj %>%
+  dplyr::mutate(se = (ucl - lcl) / (2 * 1.96)) %>%
+  dplyr::select(educ4, year, est, se) %>%
+  dplyr::group_by(educ4) %>%
+  dplyr::group_walk(~ readr::write_csv(
+    .x %>% dplyr::select(year, est, se),
+    file.path(tab_dir, paste0("joinpoint_input_current_educ_",
+                              gsub("[^A-Za-z0-9]", "_", .y$educ4), ".csv"))
+  ))
+
 # ===========================================================
 
 # =========================================================
@@ -2131,6 +2185,8 @@ trend_by_state_ageadj_PR <- function(df_prop, label, min_years = 5) {
     if (nrow(dd2) < min_years) {
       return(tibble::tibble(
         state_code    = dd$state_code[1],
+        state_abbr    = dd$state_abbr[1],
+        state_name    = dd$state_name[1],
         slope_log     = NA_real_,
         PR_per_year   = NA_real_,
         PR_lcl        = NA_real_,
@@ -2157,6 +2213,8 @@ trend_by_state_ageadj_PR <- function(df_prop, label, min_years = 5) {
     if (is.null(fit)) {
       return(tibble::tibble(
         state_code    = dd$state_code[1],
+        state_abbr    = dd$state_abbr[1],
+        state_name    = dd$state_name[1],
         slope_log     = NA_real_,
         PR_per_year   = NA_real_,
         PR_lcl        = NA_real_,
@@ -2180,6 +2238,8 @@ trend_by_state_ageadj_PR <- function(df_prop, label, min_years = 5) {
     
     tibble::tibble(
       state_code    = dd$state_code[1],
+      state_abbr    = dd$state_abbr[1],
+      state_name    = dd$state_name[1],
       slope_log     = b,
       PR_per_year   = exp(b),
       PR_lcl        = exp(ci[1]),
@@ -2194,14 +2254,12 @@ trend_by_state_ageadj_PR <- function(df_prop, label, min_years = 5) {
     )
   }
   
-  # Inside trend_by_state_ageadj_PR, replace the final left_join block with:
   purrr::map_dfr(
     df_prop %>%
       dplyr::group_by(state_code, state_abbr, state_name) %>%
       dplyr::group_split(),
     fit_one
   ) %>%
-    # state_abbr/state_name already carried from group_split keys
     dplyr::left_join(
       state_xwalk %>%
         dplyr::select(fips, state_abbr, state_name) %>%
@@ -2209,7 +2267,6 @@ trend_by_state_ageadj_PR <- function(df_prop, label, min_years = 5) {
                       state_name_xwalk = state_name),
       by = c("state_code" = "fips")
     ) %>%
-    # Use xwalk values to fill any gaps
     dplyr::mutate(
       state_abbr = dplyr::coalesce(state_abbr, state_abbr_xwalk),
       state_name = dplyr::coalesce(state_name, state_name_xwalk)
@@ -2275,6 +2332,10 @@ des_all <- stats::update(
                   levels = c("Northeast","Midwest","South","West")),
   covid  = as.integer(year >= 2020)   # ADD THIS
 )
+
+# des_all updated with region + covid above; des_curr must be rebuilt
+# from the updated des_all to inherit those variables for regression models
+
 des_curr <- subset(des_all, is_current)
 
 
@@ -2437,29 +2498,27 @@ message("Primary models done")
 RUN_TREND_SENS <- TRUE
 if (RUN_TREND_SENS) {
   fit_pr_curr_time_cat <- survey::svyglm(
-    any_binge_cdc ~ factor(year) + sex_f + age_group + race4 +
-      educ4 + factor(state),
+    any_binge_cdc ~ factor(year) + sex_f + age_group + race6_nat +
+      educ4 + factor(region),
     design = des_curr, family = quasipoisson(link = "log")
   )
   fit_pr_curr_time_ns3 <- survey::svyglm(
     any_binge_cdc ~ splines::ns(year_lin, df = 3) + sex_f + age_group +
-      race4 + educ4 + factor(state),
+      race6_nat + educ4 + factor(region),
     design = des_curr, family = quasipoisson(link = "log")
   )
+  
+  readr::write_csv(
+    safe_extract(fit_pr_curr_time_cat),
+    file.path(tab_dir, "adj_PR_currentdrinkers_timeCategorical.csv")
+  )
+  readr::write_csv(
+    safe_extract(fit_pr_curr_time_ns3),
+    file.path(tab_dir, "adj_PR_currentdrinkers_timeSpline_df3.csv")
+  )
+  
+  rm(fit_pr_curr_time_cat, fit_pr_curr_time_ns3); gc()
 }
-
-  # Uncomment if you want files:
-readr::write_csv(mk_pr_table(fit_pr_curr_time_cat),
-file.path(tab_dir, "adj_PR_currentdrinkers_timeCategorical.csv"))
-readr::write_csv(mk_pr_table(fit_pr_curr_time_ns3),
-file.path(tab_dir, "adj_PR_currentdrinkers_timeSpline_df3.csv"))
-
-#===== Export time-spec sensitivity models =====
-
-readr::write_csv(mk_pr_table(fit_pr_curr_time_cat),
-              file.path(tab_dir, "adj_PR_currentdrinkers_timeCategorical.csv"))
-readr::write_csv(mk_pr_table(fit_pr_curr_time_ns3),
-                file.path(tab_dir, "adj_PR_currentdrinkers_timeSpline_df3.csv"))
 
 
 # ============================================================
@@ -2976,39 +3035,70 @@ readr::write_csv(prev_race_curr %>%
 
 
 # ===== Step 10) Weighted Table 1 =====
+
 make_table1 <- function(des, by_vars) {
   purrr::map_dfr(by_vars, function(v) {
-    survey::svyby(
+    
+    # Ensure grouping variable is a factor once in your data before this step
+    fml <- as.formula(paste0("~", v))
+    
+    # Part 1: weighted sample distribution
+    dist_obj <- survey::svymean(fml, design = des, na.rm = TRUE)
+    dist_ci  <- confint(dist_obj)
+    
+    dist_df <- tibble::tibble(
+      level          = names(coef(dist_obj)),
+      pct_sample     = unname(coef(dist_obj)) * 100,
+      pct_sample_lcl = dist_ci[, 1] * 100,
+      pct_sample_ucl = dist_ci[, 2] * 100
+    ) |>
+      dplyr::mutate(
+        level = sub(paste0("^", v), "", level),
+        pct_sample_ci = sprintf("%.1f", pct_sample)
+      )
+    
+    # Part 2: binge prevalence by level
+    prev_df <- survey::svyby(
       ~any_binge_cdc,
-      as.formula(paste0("~", v)),
+      fml,
       des,
       survey::svymean,
       na.rm = TRUE,
       vartype = "ci"
-    ) %>%
-      tibble::as_tibble() %>%
+    ) |>
+      tibble::as_tibble() |>
       dplyr::transmute(
-        variable       = v,
         level          = as.character(.data[[v]]),
         prev_binge     = any_binge_cdc * 100,
         prev_binge_lcl = ci_l * 100,
         prev_binge_ucl = ci_u * 100,
-        ci = sprintf("%.1f (%.1f\u2013%.1f)",
-                     prev_binge, prev_binge_lcl, prev_binge_ucl)
+        prev_binge_ci  = sprintf("%.1f (%.1f–%.1f)",
+                                 prev_binge, prev_binge_lcl, prev_binge_ucl)
       )
+    
+    dplyr::left_join(
+      dist_df |> dplyr::mutate(variable = v, .before = 1),
+      prev_df,
+      by = "level"
+    )
   })
 }
 
-tab1_all  <- make_table1(des_all,
-                         c("sex_f","age_group","race6_nat","educ4","income6","marital3"))
-tab1_curr <- make_table1(des_curr,
-                         c("sex_f","age_group","race6_nat","educ4","income6","marital3"))
+# Run for both denominators
+tab1_all <- make_table1(
+  des_all,
+  c("sex_f", "age_group", "race6_nat", "educ4", "income6", "marital3", "insured", "employ3")
+)
+
+tab1_curr <- make_table1(
+  des_curr,
+  c("sex_f", "age_group", "race6_nat", "educ4", "income6", "marital3", "insured", "employ3")
+)
 
 readr::write_csv(tab1_all,
                  file.path(tab_dir, "table1_alladults_binge_prev_by_covariate.csv"))
 readr::write_csv(tab1_curr,
                  file.path(tab_dir, "table1_current_binge_prev_by_covariate.csv"))
-
 
 # ===== J) Adjacent year deltas within each race group =====
 mk_pairs_by <- function(df_ci, group_var) {
@@ -3086,10 +3176,14 @@ des_all_incl <- stats::update(
   )
 )
 
-prev_statesDC <- survey::svyby(
-  ~any_binge_cdc, ~year, des_all, survey::svymean, na.rm = TRUE
-) %>%
-  dplyr::transmute(year = as.integer(year), est_statesDC = any_binge_cdc)
+prev_statesDC <- purrr::map_dfr(2011:2024, function(yr) {
+  df_yr  <- des_all$variables %>% dplyr::filter(year == yr)
+  des_yr <- survey::svydesign(id=~psu_id, strata=~strata_id, weights=~wt, data=df_yr, nest=TRUE)
+  out <- survey::svymean(~any_binge_cdc, des_yr, na.rm=TRUE)
+  rm(df_yr, des_yr); gc()
+  tibble::tibble(year=as.integer(yr), est_statesDC=as.numeric(out)[1])
+}) %>%
+  dplyr::arrange(year)
 
 prev_incl <- survey::svyby(
   ~any_binge_cdc, ~year, des_all_incl, survey::svymean, na.rm = TRUE
@@ -3104,148 +3198,374 @@ readr::write_csv(sens_overall,
                  file.path(tab_dir, "sensitivity_territories_overall_prev_by_year.csv"))
 
 rm(df_all_incl, des_all_incl); gc()
-message("Script complete")
 
-# ======= Join Point Analysis using CSVs created above =======
+# ============================================================
+# ---- Year × Age interaction — current drinkers ----
+# ============================================================
 
-# ---- Helper: convert any prev CSV to Joinpoint format ----
-to_joinpoint <- function(df, out_name) {
-  df %>%
-    dplyr::mutate(se = (ucl - lcl) / (2 * 1.96)) %>%
-    dplyr::select(year, est, se) %>%
-    readr::write_csv(file.path(tab_dir, out_name))
-}
+des_curr <- stats::update(
+  des_curr,
+  age_fallback = factor(
+    gsub("\u2013", "-", as.character(age_fallback)),
+    levels = c("18-24", "25-34", "35-49", "50-64", "65+")
+  )
+)
 
-# ---- Overall ----
-readr::read_csv(file.path(tab_dir, "main_prev_any_binge_alladults_AGEADJ2000_CI_prop.csv"),
-                show_col_types = FALSE) %>%
-  to_joinpoint("joinpoint_input_alladults_overall.csv")
+des_all <- stats::update(
+  des_all,
+  age_fallback = factor(
+    gsub("\u2013", "-", as.character(age_fallback)),
+    levels = c("18-24", "25-34", "35-49", "50-64", "65+")
+  )
+)
 
-readr::read_csv(file.path(tab_dir, "main_prev_any_binge_current_AGEADJ2000_CI_prop.csv"),
-                show_col_types = FALSE) %>%
-  to_joinpoint("joinpoint_input_current_overall.csv")
 
-# ---- By sex ----
-readr::read_csv(file.path(tab_dir, "main_prev_any_binge_alladults_by_sex_AGEADJ2000_CI_prop.csv"),
-                show_col_types = FALSE) %>%
-  dplyr::group_by(sex) %>%
-  dplyr::group_walk(~ to_joinpoint(
-    .x, paste0("joinpoint_input_alladults_sex_", .y$sex, ".csv")
-  ))
+fit_pr_age_time <- survey::svyglm(
+  any_binge_cdc ~ year_lin * age_fallback + sex_f + race6_nat +
+    educ4 + income6 + employ3 + marital3 + insured + factor(region),
+  design = des_curr,
+  family = quasipoisson(link = "log")
+)
 
-readr::read_csv(file.path(tab_dir, "main_prev_any_binge_current_by_sex_AGEADJ2000_CI_prop.csv"),
-                show_col_types = FALSE) %>%
-  dplyr::group_by(sex) %>%
-  dplyr::group_walk(~ to_joinpoint(
-    .x, paste0("joinpoint_input_current_sex_", .y$sex, ".csv")
-  ))
+# Joint Wald test
+wt_age_time <- survey::regTermTest(fit_pr_age_time, ~ year_lin:age_fallback)
+age_time_test <- mk_wald_row(wt_age_time, "YearxAge")
 
-# ---- By race ----
-readr::read_csv(file.path(tab_dir, "main_prev_any_binge_alladults_by_race6_AGEADJ2000_CI_prop.csv"),
-                show_col_types = FALSE) %>%
-  dplyr::group_by(race6_nat) %>%
-  dplyr::group_walk(~ to_joinpoint(
-    .x, paste0("joinpoint_input_alladults_",
-               gsub("[^A-Za-z0-9]", "_", .y$race6_nat), ".csv")
-  ))
+# Diagnostics
+diag_age_time <- diag_quasi(fit_pr_age_time, "PR current, Year×Age")
 
-readr::read_csv(file.path(tab_dir, "main_prev_any_binge_current_by_race6_AGEADJ2000_CI_prop.csv"),
-                show_col_types = FALSE) %>%
-  dplyr::group_by(race6_nat) %>%
-  dplyr::group_walk(~ to_joinpoint(
-    .x, paste0("joinpoint_input_current_",
-               gsub("[^A-Za-z0-9]", "_", .y$race6_nat), ".csv")
-  ))
+# Store coefficients and vcov before removing model
+age_levels <- levels(des_curr$variables$age_fallback)
+co_age <- stats::coef(fit_pr_age_time)
+vc_age <- stats::vcov(fit_pr_age_time)
 
-# ---- By age group ----
-readr::read_csv(file.path(tab_dir, "main_prev_any_binge_alladults_by_agegroup_CI_prop.csv"),
-                show_col_types = FALSE) %>%
-  dplyr::group_by(age_group) %>%
-  dplyr::group_walk(~ to_joinpoint(
-    .x, paste0("joinpoint_input_alladults_age_",
-               gsub("[^A-Za-z0-9]", "_", .y$age_group), ".csv")
-  ))
+rm(fit_pr_age_time); gc()
 
-readr::read_csv(file.path(tab_dir, "main_prev_any_binge_current_by_agegroup_CI_prop.csv"),
-                show_col_types = FALSE) %>%
-  dplyr::group_by(age_group) %>%
-  dplyr::group_walk(~ to_joinpoint(
-    .x, paste0("joinpoint_input_current_age_",
-               gsub("[^A-Za-z0-9]", "_", .y$age_group), ".csv")
-  ))
-
-# ---- By education ----
-readr::read_csv(file.path(tab_dir, "main_prev_any_binge_alladults_by_educ4_AGEADJ2000_CI_prop.csv"),
-                show_col_types = FALSE) %>%
-  dplyr::group_by(educ4) %>%
-  dplyr::group_walk(~ to_joinpoint(
-    .x, paste0("joinpoint_input_alladults_educ_",
-               gsub("[^A-Za-z0-9]", "_", .y$educ4), ".csv")
-  ))
-
-readr::read_csv(file.path(tab_dir, "main_prev_any_binge_current_by_educ4_AGEADJ2000_CI_prop.csv"),
-                show_col_types = FALSE) %>%
-  dplyr::group_by(educ4) %>%
-  dplyr::group_walk(~ to_joinpoint(
-    .x, paste0("joinpoint_input_current_educ_",
-               gsub("[^A-Za-z0-9]", "_", .y$educ4), ".csv")
-  ))
-
-message("All Joinpoint input files written")
-
-# Find all joinpoint input files
-jp_files <- list.files(tab_dir, 
-                       pattern = "^joinpoint_input_.*\\.csv$",
-                       full.names = TRUE)
-
-# Check all files at once
-jp_check <- purrr::map_dfr(jp_files, function(f) {
-  df <- readr::read_csv(f, show_col_types = FALSE)
-  
+# Age-specific annual PRs via delta method
+age_annual_pr <- purrr::map_dfr(age_levels, function(ag) {
+  if (ag == "18-24") {
+    b  <- unname(co_age["year_lin"])
+    se <- sqrt(vc_age["year_lin", "year_lin"])
+  } else {
+    int_term <- paste0("year_lin:age_fallback", ag)
+    if (!int_term %in% names(co_age)) return(tibble::tibble())
+    b  <- unname(co_age["year_lin"]) + unname(co_age[int_term])
+    se <- sqrt(
+      vc_age["year_lin", "year_lin"] +
+        vc_age[int_term, int_term] +
+        2 * vc_age["year_lin", int_term]
+    )
+  }
   tibble::tibble(
-    file          = basename(f),
-    # Column name check
-    has_year      = "year" %in% names(df),
-    has_est       = "est"  %in% names(df),
-    has_se        = "se"   %in% names(df),
-    n_cols        = ncol(df),
-    n_rows        = nrow(df),
-    # Proportion vs percentage check
-    est_max       = max(df$est, na.rm = TRUE),
-    est_min       = min(df$est, na.rm = TRUE),
-    is_proportion = max(df$est, na.rm = TRUE) < 1,
-    # SE sanity check
-    se_max        = max(df$se, na.rm = TRUE),
-    se_min        = min(df$se, na.rm = TRUE),
-    any_na_se     = any(is.na(df$se)),
-    any_zero_se   = any(df$se == 0, na.rm = TRUE),
-    # Year range check
-    year_min      = min(df$year),
-    year_max      = max(df$year),
-    n_years       = dplyr::n_distinct(df$year)
+    age_group   = ag,
+    PR_per_year = exp(b),
+    LCL         = exp(b - 1.96 * se),
+    UCL         = exp(b + 1.96 * se),
+    p           = 2 * (1 - pnorm(abs(b / se)))
   )
 })
 
-# Print full check
-print(jp_check, n = Inf)
+# Write outputs
+readr::write_csv(age_time_test,
+                 file.path(tab_dir, "adj_PR_currentdrinkers_interaction_YearByAge_jointWald.csv"))
+readr::write_csv(age_annual_pr,
+                 file.path(tab_dir, "adj_PR_currentdrinkers_TrendByAge_annualPR.csv"))
 
-# Flag any problems
-problems <- jp_check %>%
-  dplyr::filter(
-    !has_year | !has_est | !has_se |  # wrong column names
-      !is_proportion                  |  # percentages not proportions
-      any_na_se                       |  # missing SEs
-      any_zero_se                     |  # zero SEs will crash Joinpoint
-      n_rows != 14                    |  # not all 14 years present
-      n_cols != 3                        # extra columns
+# ============================================================
+# ---- Joinpoint exports — by age group (5-band) ----
+# ============================================================
+
+# First we need age-stratified age-adjusted prevalence
+# Using age7 standardization within each age_fallback group is not
+# appropriate here since age_fallback IS the grouping variable.
+# Instead we produce unadjusted (direct weighted) prevalence by
+# age_fallback group and year, which is the correct input for
+# age-specific Joinpoint trend analysis.
+
+# All adults — by age_fallback, unadjusted
+prev_age_fallback_all <- purrr::map_dfr(2011:2024, function(yr) {
+  df_yr <- des_all$variables %>%
+    dplyr::filter(year == yr, !is.na(age_fallback))
+  des_yr <- survey::svydesign(
+    id = ~psu_id, strata = ~strata_id,
+    weights = ~wt, data = df_yr, nest = TRUE
+  )
+  out <- survey::svyby(
+    ~any_binge_cdc, ~age_fallback, des_yr,
+    survey::svymean, na.rm = TRUE, vartype = "ci"
   ) %>%
-  dplyr::select(file, has_year, has_est, has_se, 
-                is_proportion, any_na_se, any_zero_se, 
-                n_rows, n_cols)
+    tibble::as_tibble() %>%
+    dplyr::mutate(year = yr)
+  rm(df_yr, des_yr); gc()
+  out
+}) %>%
+  dplyr::transmute(
+    age_fallback = as.character(age_fallback),
+    year = as.integer(year),
+    est = any_binge_cdc,
+    lcl = ci_l,
+    ucl = ci_u
+  ) %>%
+  dplyr::arrange(age_fallback, year)
 
-if (nrow(problems) == 0) {
-  message("All Joinpoint input files passed checks")
-} else {
-  message("Problems found in ", nrow(problems), " files:")
-  print(problems, n = Inf)
-}
+readr::write_csv(
+  prev_age_fallback_all,
+  file.path(tab_dir, "main_prev_any_binge_alladults_by_age_fallback_CI_prop.csv")
+)
+
+# Current drinkers — by age_fallback, unadjusted
+prev_age_fallback_curr <- purrr::map_dfr(2011:2024, function(yr) {
+  df_yr <- des_curr$variables %>%
+    dplyr::filter(year == yr, !is.na(age_fallback))
+  des_yr <- survey::svydesign(
+    id = ~psu_id, strata = ~strata_id,
+    weights = ~wt, data = df_yr, nest = TRUE
+  )
+  out <- survey::svyby(
+    ~any_binge_cdc, ~age_fallback, des_yr,
+    survey::svymean, na.rm = TRUE, vartype = "ci"
+  ) %>%
+    tibble::as_tibble() %>%
+    dplyr::mutate(year = yr)
+  rm(df_yr, des_yr); gc()
+  out
+}) %>%
+  dplyr::transmute(
+    age_fallback = as.character(age_fallback),
+    year = as.integer(year),
+    est = any_binge_cdc,
+    lcl = ci_l,
+    ucl = ci_u
+  ) %>%
+  dplyr::arrange(age_fallback, year)
+
+readr::write_csv(
+  prev_age_fallback_curr,
+  file.path(tab_dir, "main_prev_any_binge_current_by_age_fallback_CI_prop.csv")
+)
+
+# ---- Joinpoint exports — age_fallback, all adults ----
+prev_age_fallback_all %>%
+  dplyr::mutate(se = (ucl - lcl) / (2 * 1.96)) %>%
+  dplyr::select(age_fallback, year, est, se) %>%
+  dplyr::group_by(age_fallback) %>%
+  dplyr::group_walk(~ readr::write_csv(
+    .x %>% dplyr::select(year, est, se),
+    file.path(tab_dir, paste0(
+      "joinpoint_input_alladults_age_",
+      gsub("[^A-Za-z0-9]", "_", .y$age_fallback), ".csv"
+    ))
+  ))
+
+# ---- Joinpoint exports — age_fallback, current drinkers ----
+prev_age_fallback_curr %>%
+  dplyr::mutate(se = (ucl - lcl) / (2 * 1.96)) %>%
+  dplyr::select(age_fallback, year, est, se) %>%
+  dplyr::group_by(age_fallback) %>%
+  dplyr::group_walk(~ readr::write_csv(
+    .x %>% dplyr::select(year, est, se),
+    file.path(tab_dir, paste0(
+      "joinpoint_input_current_age_",
+      gsub("[^A-Za-z0-9]", "_", .y$age_fallback), ".csv"
+    ))
+  ))
+
+message("Age-stratified prevalence and Joinpoint exports complete")
+
+
+# ============================================================
+# ---- Abstention Sensitivity ----
+# ============================================================
+
+"is_current" %in% names(des_all$variables)
+
+prev_abstention <- purrr::map_dfr(2011:2024, function(yr) {
+  df_yr <- des_all$variables %>% dplyr::filter(year == yr)
+  des_yr <- survey::svydesign(id = ~psu_id, strata = ~strata_id,
+                              weights = ~wt, data = df_yr, nest = TRUE)
+  out <- survey::svymean(~is_current, des_yr, na.rm = TRUE)
+  ci  <- suppressWarnings(confint(out))
+  rm(df_yr, des_yr); gc()
+  tibble::tibble(year = as.integer(yr),
+                 pct_current = as.numeric(out)[1] * 100,
+                 lcl = ci[1,1] * 100,
+                 ucl = ci[1,2] * 100)
+}) %>% dplyr::arrange(year)
+
+readr::write_csv(prev_abstention,
+                 file.path(tab_dir, "sensitivity_abstention_prevalence_by_year.csv"))
+
+# ===== D2) By sex — unadjusted, current drinkers =====
+prev_sex_curr <- purrr::map_dfr(2011:2024, function(yr) {
+  df_yr  <- des_curr$variables %>%
+    dplyr::filter(year == yr, !is.na(sex_f))
+  des_yr <- survey::svydesign(id=~psu_id, strata=~strata_id,
+                              weights=~wt, data=df_yr, nest=TRUE)
+  out <- survey::svyby(~any_binge_cdc, ~sex_f, des_yr,
+                       survey::svymean, na.rm=TRUE, vartype="ci") %>%
+    tibble::as_tibble() %>% dplyr::mutate(year=yr)
+  rm(df_yr, des_yr); gc()
+  out
+}) %>%
+  dplyr::transmute(sex=as.character(sex_f), year=as.integer(year),
+                   est=any_binge_cdc, lcl=ci_l, ucl=ci_u) %>%
+  dplyr::arrange(sex, year)
+
+readr::write_csv(prev_sex_curr,
+                 file.path(tab_dir, "main_prev_any_binge_current_by_sex_CI_prop.csv"))
+readr::write_csv(prev_sex_curr %>%
+                   dplyr::mutate(dplyr::across(c(est,lcl,ucl), ~.x*100)),
+                 file.path(tab_dir, "main_prev_any_binge_current_by_sex_CI_pct.csv"))
+
+# ===== E1b) By age group (10-bin) — unadjusted, current drinkers =====
+prev_age10_curr <- purrr::map_dfr(2011:2024, function(yr) {
+  df_yr  <- des_curr$variables %>%
+    dplyr::filter(year == yr, !is.na(age_group))
+  des_yr <- survey::svydesign(id=~psu_id, strata=~strata_id,
+                              weights=~wt, data=df_yr, nest=TRUE)
+  out <- survey::svyby(~any_binge_cdc, ~age_group, des_yr,
+                       survey::svymean, na.rm=TRUE, vartype="ci") %>%
+    tibble::as_tibble() %>% dplyr::mutate(year=yr)
+  rm(df_yr, des_yr); gc()
+  out
+}) %>%
+  dplyr::transmute(age_group10=as.character(age_group),
+                   year=as.integer(year),
+                   est=any_binge_cdc, lcl=ci_l, ucl=ci_u) %>%
+  dplyr::arrange(age_group10, year)
+
+readr::write_csv(prev_age10_curr,
+                 file.path(tab_dir, "main_prev_any_binge_current_by_age10_CI_prop.csv"))
+readr::write_csv(prev_age10_curr %>%
+                   dplyr::mutate(dplyr::across(c(est,lcl,ucl), ~.x*100)),
+                 file.path(tab_dir, "main_prev_any_binge_current_by_age10_CI_pct.csv"))
+
+# ===== E2b) By age group (5-bin) — unadjusted, current drinkers =====
+prev_age5_curr <- purrr::map_dfr(2011:2024, function(yr) {
+  df_yr  <- des_curr$variables %>%
+    dplyr::filter(year == yr, !is.na(age_fallback))
+  des_yr <- survey::svydesign(id=~psu_id, strata=~strata_id,
+                              weights=~wt, data=df_yr, nest=TRUE)
+  out <- survey::svyby(~any_binge_cdc, ~age_fallback, des_yr,
+                       survey::svymean, na.rm=TRUE, vartype="ci") %>%
+    tibble::as_tibble() %>% dplyr::mutate(year=yr)
+  rm(df_yr, des_yr); gc()
+  out
+}) %>%
+  dplyr::transmute(age_group5=as.character(age_fallback),
+                   year=as.integer(year),
+                   est=any_binge_cdc, lcl=ci_l, ucl=ci_u) %>%
+  dplyr::arrange(age_group5, year)
+
+readr::write_csv(prev_age5_curr,
+                 file.path(tab_dir, "main_prev_any_binge_current_by_age5_CI_prop.csv"))
+readr::write_csv(prev_age5_curr %>%
+                   dplyr::mutate(dplyr::across(c(est,lcl,ucl), ~.x*100)),
+                 file.path(tab_dir, "main_prev_any_binge_current_by_age5_CI_pct.csv"))
+
+# ============================================================
+# ---- Sex-stratified education prevalence — for Joinpoint ----
+# ============================================================
+# Motivation: McKetta 2020 found monotonic education gradient among women.
+# These exports allow sex-stratified Joinpoint to test whether that
+# pattern holds in 2011-2024 data separately for females and males.
+
+# Female current drinkers — age-adjusted prevalence by education
+prev_educ_curr_female_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
+  message("Processing year: ", yr)
+  
+  df_yr <- des_curr$variables %>%
+    dplyr::filter(year == yr, !is.na(age_group), !is.na(educ4),
+                  sex_f == "Female")
+  
+  des_yr <- survey::svydesign(id = ~psu_id, strata = ~strata_id,
+                              weights = ~wt, data = df_yr, nest = TRUE)
+  
+  des_std <- survey::svystandardize(des_yr, by = ~age_group, over = ~educ4,
+                                    population = std2000_adult10)
+  
+  out <- survey::svyby(~any_binge_cdc, ~educ4, des_std, survey::svymean,
+                       na.rm = TRUE, vartype = "ci") %>%
+    tibble::as_tibble() %>%
+    dplyr::mutate(year = yr)
+  
+  rm(df_yr, des_yr, des_std); gc()
+  out
+}) %>%
+  dplyr::transmute(
+    educ4 = as.character(educ4),
+    year  = as.integer(year),
+    est   = any_binge_cdc,
+    lcl   = ci_l,
+    ucl   = ci_u
+  ) %>%
+  dplyr::arrange(educ4, year)
+
+readr::write_csv(
+  prev_educ_curr_female_ageadj,
+  file.path(tab_dir, "main_prev_any_binge_current_female_by_educ4_AGEADJ2000_CI_prop.csv")
+)
+
+# Male current drinkers — age-adjusted prevalence by education
+prev_educ_curr_male_ageadj <- purrr::map_dfr(2011:2024, function(yr) {
+  message("Processing year: ", yr)
+  
+  df_yr <- des_curr$variables %>%
+    dplyr::filter(year == yr, !is.na(age_group), !is.na(educ4),
+                  sex_f == "Male")
+  
+  des_yr <- survey::svydesign(id = ~psu_id, strata = ~strata_id,
+                              weights = ~wt, data = df_yr, nest = TRUE)
+  
+  des_std <- survey::svystandardize(des_yr, by = ~age_group, over = ~educ4,
+                                    population = std2000_adult10)
+  
+  out <- survey::svyby(~any_binge_cdc, ~educ4, des_std, survey::svymean,
+                       na.rm = TRUE, vartype = "ci") %>%
+    tibble::as_tibble() %>%
+    dplyr::mutate(year = yr)
+  
+  rm(df_yr, des_yr, des_std); gc()
+  out
+}) %>%
+  dplyr::transmute(
+    educ4 = as.character(educ4),
+    year  = as.integer(year),
+    est   = any_binge_cdc,
+    lcl   = ci_l,
+    ucl   = ci_u
+  ) %>%
+  dplyr::arrange(educ4, year)
+
+readr::write_csv(
+  prev_educ_curr_male_ageadj,
+  file.path(tab_dir, "main_prev_any_binge_current_male_by_educ4_AGEADJ2000_CI_prop.csv")
+)
+
+# ---- Joinpoint exports — female current drinkers by education ----
+prev_educ_curr_female_ageadj %>%
+  dplyr::mutate(se = (ucl - lcl) / (2 * 1.96)) %>%
+  dplyr::select(educ4, year, est, se) %>%
+  dplyr::group_by(educ4) %>%
+  dplyr::group_walk(~ readr::write_csv(
+    .x %>% dplyr::select(year, est, se),
+    file.path(tab_dir, paste0(
+      "joinpoint_input_current_female_educ_",
+      gsub("[^A-Za-z0-9]", "_", .y$educ4), ".csv"
+    ))
+  ))
+
+# ---- Joinpoint exports — male current drinkers by education ----
+prev_educ_curr_male_ageadj %>%
+  dplyr::mutate(se = (ucl - lcl) / (2 * 1.96)) %>%
+  dplyr::select(educ4, year, est, se) %>%
+  dplyr::group_by(educ4) %>%
+  dplyr::group_walk(~ readr::write_csv(
+    .x %>% dplyr::select(year, est, se),
+    file.path(tab_dir, paste0(
+      "joinpoint_input_current_male_educ_",
+      gsub("[^A-Za-z0-9]", "_", .y$educ4), ".csv"
+    ))
+  ))
+
+message("Sex-stratified education Joinpoint exports complete")
