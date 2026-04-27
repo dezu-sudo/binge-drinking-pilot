@@ -31,14 +31,13 @@ fig_dir <- file.path(PROJ_DIR, "outputs/main/figures")
 
 # ===== Packages / parallel =====
 
-
   library(tidyverse); library(janitor); library(haven)
   library(survey);    library(srvyr);   library(readr);  library(scales); library(purrr)
 
 options(survey.lonely.psu = "adjust")
 writeLines(capture.output(sessionInfo()), file.path(PROJ_DIR, "docs/sessionInfo_main_run.txt"))
 
-# ===== Helpers (REPLACES older versions) =====
+# ===== Helpers  =====
 
 # robust resolver
 find_var <- function(df, candidates){
@@ -55,7 +54,6 @@ find_var <- function(df, candidates){
   NA_character_
 }
 
-
 # Convert ALCDAY5/4 coded values to ~30-day drinking days
 alcday5_to_days30 <- function(x){
   xi <- suppressWarnings(as.integer(as.character(x)))
@@ -67,13 +65,13 @@ alcday5_to_days30 <- function(x){
 }
 
 
-# ---- Step 12: Formatting helpers ----
+# ---- Formatting helpers ----
 fmt_pct1 <- function(x) sprintf("%.1f", x*100)
 fmt_ci1  <- function(p, l, u) sprintf("%.1f (%.1f–%.1f)", p*100, l*100, u*100)
 add_universe <- function(df, label) dplyr::mutate(df, universe = label, .before = 1)
 
 
-# recoder (keep as-is from pilot)
+# recoder 
 recode_analysis <- function(d){
   na_77_88_99 <- function(x) ifelse(x %in% c(77, 88, 99, 777, 888, 999), NA, x)
   as_int   <- function(x) suppressWarnings(as.integer(as.character(x)))
@@ -759,66 +757,64 @@ readr::write_csv(df_all %>% count(year) %>% arrange(year),
 
 saveRDS(df_all, file.path(PROJ_DIR, "data/cache/df_all_after_race_state.rds"))
 
-# # ===== Missingness table (unweighted N, weighted %) BEFORE core exclusions =====
-# df_pre <- readRDS(file.path(PROJ_DIR, "data/cache/df_all_after_race_state.rds"))
-# 
-# vars_check <- c(
-#   "any_binge_cdc","binge_episodes","alcday5","sex","age_group",
-#   "race4","educ4","income3","employ3","marital2","insured",
-#   "max_drinks","averdrinks","state"
-# )
-# 
-# # --- Unweighted missing counts (fast, no pivoting across types) ---
-# miss_unw <- tibble::tibble(
-#   variable = vars_check,
-#   n_unw_missing = vapply(df_pre[vars_check], function(x) sum(is.na(x)), integer(1))
-# )
-# 
-# # --- Slim survey design (same IDs/strata/weights; fewer columns for speed) ---
-# df_pre_small <- df_pre %>% dplyr::select(wt, psu, strata, year, dplyr::all_of(vars_check))
-# des_pre <- survey::svydesign(
-#   id = ~interaction(year, psu),
-#   strata = ~interaction(year, strata),
-#   weights = ~wt,
-#   data = df_pre_small,
-#   nest = TRUE
-# )
-# 
-# # --- Vectorized weighted missingness (one svymean call) ---
-# miss_terms <- paste0("I(is.na(", vars_check, "))")
-# f_miss <- as.formula(paste("~", paste(miss_terms, collapse = " + ")))
-# 
-# p_miss <- survey::svymean(f_miss, design = des_pre, na.rm = TRUE)
-# ci_miss <- suppressWarnings(confint(p_miss))
-# 
-# miss_wt <- tibble::tibble(
-#   variable = vars_check,
-#   pct_wt_missing = as.numeric(p_miss) * 100,
-#   lcl = ci_miss[, 1] * 100,
-#   ucl = ci_miss[, 2] * 100
-# )
-# 
-# # --- Final table ---
-# miss_tab <- dplyr::left_join(miss_unw, miss_wt, by = "variable") %>%
-#   dplyr::arrange(dplyr::desc(n_unw_missing))
-# 
-# readr::write_csv(miss_tab, file.path(tab_dir, "qc_missingness_before_core_exclusions.csv"))
-# 
-# # ===== (Optional) Equivalence check: full vs slim design for missingness =====
-# des_pre_full <- survey::svydesign(
-#   id = ~interaction(year, psu),
-#   strata = ~interaction(year, strata),
-#   weights = ~wt,
-#   data = df_pre,
-#   nest = TRUE
-# )
-# 
-# all.equal(
-#   as.numeric(survey::svymean(f_miss, des_pre_full, na.rm = TRUE)),
-#   as.numeric(p_miss),
-#   tolerance = 1e-12
-# )
+# ===== Missingness table (unweighted N, weighted %) BEFORE core exclusions =====
+# ---- Pre-exclusion sample ----
+df_pre <- readRDS(file.path(PROJ_DIR, "data/cache/df_all_after_race_state.rds"))
 
+vars_check <- c(
+  "any_binge_cdc", "alcday5", "sex", "age_group",
+  "race6_nat", "educ4", "income6", "employ3",
+  "marital3", "insured", "max_drinks", "state"
+)
+
+miss_pre <- tibble::tibble(
+  variable      = vars_check,
+  n_total_pre   = nrow(df_pre),
+  n_miss_pre    = vapply(df_pre[vars_check],
+                         function(x) sum(is.na(x)), integer(1)),
+  pct_miss_pre  = n_miss_pre / n_total_pre * 100
+)
+
+# ---- Final analytic sample (after core exclusions) ----
+df_analytic <- df_pre |>
+  dplyr::filter(!is.na(sex), !is.na(age_group))
+
+miss_analytic <- tibble::tibble(
+  variable          = vars_check,
+  n_total_analytic  = nrow(df_analytic),
+  n_miss_analytic   = vapply(df_analytic[vars_check],
+                             function(x) sum(is.na(x)), integer(1)),
+  pct_miss_analytic = n_miss_analytic / n_total_analytic * 100
+)
+
+# ---- Weighted missingness on final analytic sample ----
+miss_wt <- purrr::map_dfr(sort(unique(df_analytic$year)), function(yr) {
+  df_yr <- df_analytic |> dplyr::filter(year == yr)
+  wt_total <- sum(df_yr$wt, na.rm = TRUE)
+  purrr::map_dfr(vars_check, function(v) {
+    wt_miss <- sum(df_yr$wt[is.na(df_yr[[v]])], na.rm = TRUE)
+    tibble::tibble(
+      year           = yr,
+      variable       = v,
+      pct_wt_missing = wt_miss / wt_total * 100
+    )
+  })
+}) |>
+  dplyr::summarise(
+    pct_wt_missing_mean = mean(pct_wt_missing),
+    pct_wt_missing_min  = min(pct_wt_missing),
+    pct_wt_missing_max  = max(pct_wt_missing),
+    .by = variable
+  )
+
+# ---- Combine ----
+miss_final <- miss_pre |>
+  dplyr::left_join(miss_analytic, by = "variable") |>
+  dplyr::left_join(miss_wt,       by = "variable") |>
+  dplyr::arrange(dplyr::desc(pct_miss_pre))
+
+readr::write_csv(miss_final,
+                 file.path(tab_dir, "qc_missingness_publication.csv"))
 
 
 
@@ -3036,69 +3032,158 @@ readr::write_csv(prev_race_curr %>%
 
 # ===== Step 10) Weighted Table 1 =====
 
-make_table1 <- function(des, by_vars) {
+make_table1_fast <- function(des_all,
+                             by_vars,
+                             outcome   = "any_binge_cdc",
+                             digits    = 1,
+                             cache_dir = file.path(PROJ_DIR, "data/cache/table1_fast")) {
+  
+  dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+  
+  fmt_ci <- function(e, l, u) {
+    sprintf(paste0("%.", digits, "f (%.", digits, "f\u2013%.", digits, "f)"), e, l, u)
+  }
+  
+  years  <- sort(unique(des_all$variables$year))
+  df_all <- des_all$variables
+  fml_o  <- as.formula(paste0("~", outcome))
+  
   purrr::map_dfr(by_vars, function(v) {
     
-    # Ensure grouping variable is a factor once in your data before this step
-    fml <- as.formula(paste0("~", v))
+    cache_file <- file.path(cache_dir, paste0("t1_", v, ".rds"))
+    if (file.exists(cache_file)) {
+      message("Loading cached result for: ", v)
+      return(readRDS(cache_file))
+    }
     
-    # Part 1: weighted sample distribution
-    dist_obj <- survey::svymean(fml, design = des, na.rm = TRUE)
-    dist_ci  <- confint(dist_obj)
+    message("Computing: ", v, " at ", Sys.time())
+    fml_v <- as.formula(paste0("~", v))
     
-    dist_df <- tibble::tibble(
-      level          = names(coef(dist_obj)),
-      pct_sample     = unname(coef(dist_obj)) * 100,
-      pct_sample_lcl = dist_ci[, 1] * 100,
-      pct_sample_ucl = dist_ci[, 2] * 100
-    ) |>
+    # ---- Year-by-year: one small design per year, then combine ----
+    yr_rows <- purrr::map(years, function(yr) {
+      
+      df_yr <- df_all |>
+        dplyr::filter(
+          year == yr,
+          !is.na(.data[[v]]),
+          !is.na(.data[[outcome]])
+        ) |>
+        dplyr::select(psu_id, strata_id, wt,
+                      dplyr::all_of(c(v, outcome)))
+      
+      if (nrow(df_yr) < 10) {
+        message("  Year ", yr, " skipped (too few rows)")
+        return(NULL)
+      }
+      
+      des_yr <- survey::svydesign(
+        id      = ~psu_id,
+        strata  = ~strata_id,
+        weights = ~wt,
+        data    = df_yr,
+        nest    = TRUE
+      )
+      
+      # Group-level total survey weight (used to combine estimates across years)
+      W_g <- df_yr |>
+        dplyr::group_by(level = as.character(.data[[v]])) |>
+        dplyr::summarise(W_g = sum(wt, na.rm = TRUE), .groups = "drop")
+      
+      prev_raw <- tryCatch(
+        survey::svyby(fml_o, fml_v, des_yr, survey::svymean,
+                      na.rm = TRUE, vartype = "ci") |>
+          tibble::as_tibble(),
+        error = function(e) {
+          message("  Year ", yr, " svyby error: ", conditionMessage(e))
+          NULL
+        }
+      )
+      
+      rm(des_yr, df_yr); gc()
+      
+      if (is.null(prev_raw)) return(NULL)
+      
+      grp_col <- names(prev_raw)[1]
+      est_col <- if (outcome %in% names(prev_raw)) outcome else
+        setdiff(names(prev_raw), c(grp_col, "ci_l", "ci_u"))[1]
+      
+      prev_raw |>
+        dplyr::transmute(
+          level  = as.character(.data[[grp_col]]),
+          est_yr = .data[[est_col]],
+          se_yr  = (ci_u - ci_l) / (2 * 1.96)   # SE recovered from CI
+        ) |>
+        dplyr::left_join(W_g, by = "level") |>
+        dplyr::mutate(year = yr)
+      
+    }) |>
+      purrr::compact() |>
+      dplyr::bind_rows()
+    
+    # ---- Combine across years: weight-weighted average ----
+    result_prev <- yr_rows |>
+      dplyr::group_by(level) |>
+      dplyr::summarise(
+        W_total    = sum(W_g, na.rm = TRUE),
+        prev_binge = sum(W_g * est_yr, na.rm = TRUE) / W_total,
+        prev_var   = sum((W_g / W_total)^2 * se_yr^2, na.rm = TRUE),
+        .groups    = "drop"
+      ) |>
       dplyr::mutate(
-        level = sub(paste0("^", v), "", level),
-        pct_sample_ci = sprintf("%.1f", pct_sample)
+        prev_binge     = prev_binge * 100,
+        prev_binge_lcl = (prev_binge / 100 - 1.96 * sqrt(prev_var)) * 100,
+        prev_binge_ucl = (prev_binge / 100 + 1.96 * sqrt(prev_var)) * 100,
+        prev_binge_ci  = fmt_ci(prev_binge, prev_binge_lcl, prev_binge_ucl)
       )
     
-    # Part 2: binge prevalence by level
-    prev_df <- survey::svyby(
-      ~any_binge_cdc,
-      fml,
-      des,
-      survey::svymean,
-      na.rm = TRUE,
-      vartype = "ci"
-    ) |>
-      tibble::as_tibble() |>
-      dplyr::transmute(
-        level          = as.character(.data[[v]]),
-        prev_binge     = any_binge_cdc * 100,
-        prev_binge_lcl = ci_l * 100,
-        prev_binge_ucl = ci_u * 100,
-        prev_binge_ci  = sprintf("%.1f (%.1f–%.1f)",
-                                 prev_binge, prev_binge_lcl, prev_binge_ucl)
-      )
+    # ---- Sample composition: direct weight sum, no design object needed ----
+    df_comp <- df_all |>
+      dplyr::filter(!is.na(.data[[outcome]]), !is.na(.data[[v]]))
     
-    dplyr::left_join(
-      dist_df |> dplyr::mutate(variable = v, .before = 1),
-      prev_df,
-      by = "level"
+    wt_by_level <- tapply(df_comp$wt, as.character(df_comp[[v]]), sum, na.rm = TRUE)
+    comp_df <- tibble::tibble(
+      variable       = v,
+      level          = names(wt_by_level),
+      pct_sample     = as.numeric(wt_by_level) / sum(wt_by_level, na.rm = TRUE) * 100,
+      pct_sample_fmt = sprintf(paste0("%.", digits, "f"), pct_sample)
     )
+    
+    # ---- Unweighted N ----
+    n_unw <- df_comp |>
+      dplyr::count(level = as.character(.data[[v]]), name = "n_unw")
+    
+    result <- comp_df |>
+      dplyr::left_join(
+        result_prev |> dplyr::mutate(variable = v),
+        by = dplyr::join_by(variable, level)
+      ) |>
+      dplyr::left_join(n_unw, by = dplyr::join_by(level)) |>
+      dplyr::select(variable, level,
+                    pct_sample, pct_sample_fmt,
+                    prev_binge, prev_binge_lcl, prev_binge_ucl, prev_binge_ci,
+                    n_unw)
+    
+    saveRDS(result, cache_file)
+    message("Saved: ", v, " at ", Sys.time())
+    result
   })
 }
 
-# Run for both denominators
-tab1_all <- make_table1(
-  des_all,
-  c("sex_f", "age_group", "race6_nat", "educ4", "income6", "marital3", "insured", "employ3")
-)
 
-tab1_curr <- make_table1(
-  des_curr,
-  c("sex_f", "age_group", "race6_nat", "educ4", "income6", "marital3", "insured", "employ3")
-)
+tab1_all  <- make_table1_fast(des_all,
+                              by_vars = c("sex_f","age_group","race6_nat", "employ3",
+                                          "educ4","income6","marital3", "insured"))
+
+tab1_curr <- make_table1_fast(des_curr,
+                              by_vars = c("sex_f","age_group","race6_nat", "employ3",
+                                          "educ4","income6","marital3", "insured"),
+                              cache_dir = file.path(PROJ_DIR, "data/cache/table1_fast_curr"))
 
 readr::write_csv(tab1_all,
                  file.path(tab_dir, "table1_alladults_binge_prev_by_covariate.csv"))
 readr::write_csv(tab1_curr,
                  file.path(tab_dir, "table1_current_binge_prev_by_covariate.csv"))
+
 
 # ===== J) Adjacent year deltas within each race group =====
 mk_pairs_by <- function(df_ci, group_var) {
@@ -3125,6 +3210,10 @@ mk_pairs_by <- function(df_ci, group_var) {
   }))
 }
 
+prev_race_all_ageadj  <- readr::read_csv(file.path(tab_dir, "main_prev_any_binge_alladults_by_race6_AGEADJ2000_CI_prop.csv"))
+prev_race_curr_ageadj <- readr::read_csv(file.path(tab_dir, "main_prev_any_binge_current_by_race6_AGEADJ2000_CI_prop.csv"))
+
+
 race_diffs_all_ageadj <- mk_pairs_by(prev_race_all_ageadj, race6_nat) %>%
   dplyr::mutate(denom = "All adults", .before = 1) %>%
   dplyr::group_by(denom, race6_nat) %>%
@@ -3143,61 +3232,61 @@ readr::write_csv(race_diffs_curr_ageadj,
                  file.path(tab_dir, "main_prev_any_binge_current_by_race6_AGEADJ2000_adjacent_diffs.csv"))
 
 
-# ===== Step 11) Sensitivity: including territories =====
-cache_files <- list.files(
-  file.path(PROJ_DIR, "data/cache"),
-  pattern = paste0("^BRFSS_\\d{4}_", CACHE_VER, "\\.rds$"),
-  full.names = TRUE
-)
-
-df_all_incl <- lapply(cache_files, readRDS) %>%
-  dplyr::bind_rows() %>%
-  dplyr::mutate(
-    strata = interaction(year, strata, drop = TRUE, lex.order = TRUE),
-    psu    = interaction(year, psu,    drop = TRUE, lex.order = TRUE)
-  ) %>%
-  dplyr::filter(!is.na(sex), !is.na(age_group)) %>%
-  dplyr::mutate(
-    strata_id = as.integer(factor(strata)),
-    psu_id    = as.integer(factor(psu))
-  )
-
-des_all_incl <- survey::svydesign(
-  id = ~psu_id, strata = ~strata_id, weights = ~wt,
-  data = df_all_incl, nest = TRUE
-)
-
-des_all_incl <- stats::update(
-  des_all_incl,
-  is_current = dplyr::case_when(
-    is.na(alcday5) | alcday5 %in% c(777,999) ~ NA,
-    alcday5 == 888 ~ FALSE,
-    TRUE ~ TRUE
-  )
-)
-
-prev_statesDC <- purrr::map_dfr(2011:2024, function(yr) {
-  df_yr  <- des_all$variables %>% dplyr::filter(year == yr)
-  des_yr <- survey::svydesign(id=~psu_id, strata=~strata_id, weights=~wt, data=df_yr, nest=TRUE)
-  out <- survey::svymean(~any_binge_cdc, des_yr, na.rm=TRUE)
-  rm(df_yr, des_yr); gc()
-  tibble::tibble(year=as.integer(yr), est_statesDC=as.numeric(out)[1])
-}) %>%
-  dplyr::arrange(year)
-
-prev_incl <- survey::svyby(
-  ~any_binge_cdc, ~year, des_all_incl, survey::svymean, na.rm = TRUE
-) %>%
-  dplyr::transmute(year = as.integer(year), est_incl = any_binge_cdc)
-
-sens_overall <- dplyr::left_join(prev_statesDC, prev_incl, by = "year") %>%
-  dplyr::mutate(diff_pp = (est_incl - est_statesDC) * 100) %>%
-  dplyr::arrange(year)
-
-readr::write_csv(sens_overall,
-                 file.path(tab_dir, "sensitivity_territories_overall_prev_by_year.csv"))
-
-rm(df_all_incl, des_all_incl); gc()
+# # ===== Step 11) Sensitivity: including territories =====
+# cache_files <- list.files(
+#   file.path(PROJ_DIR, "data/cache"),
+#   pattern = paste0("^BRFSS_\\d{4}_", CACHE_VER, "\\.rds$"),
+#   full.names = TRUE
+# )
+# 
+# df_all_incl <- lapply(cache_files, readRDS) %>%
+#   dplyr::bind_rows() %>%
+#   dplyr::mutate(
+#     strata = interaction(year, strata, drop = TRUE, lex.order = TRUE),
+#     psu    = interaction(year, psu,    drop = TRUE, lex.order = TRUE)
+#   ) %>%
+#   dplyr::filter(!is.na(sex), !is.na(age_group)) %>%
+#   dplyr::mutate(
+#     strata_id = as.integer(factor(strata)),
+#     psu_id    = as.integer(factor(psu))
+#   )
+# 
+# des_all_incl <- survey::svydesign(
+#   id = ~psu_id, strata = ~strata_id, weights = ~wt,
+#   data = df_all_incl, nest = TRUE
+# )
+# 
+# des_all_incl <- stats::update(
+#   des_all_incl,
+#   is_current = dplyr::case_when(
+#     is.na(alcday5) | alcday5 %in% c(777,999) ~ NA,
+#     alcday5 == 888 ~ FALSE,
+#     TRUE ~ TRUE
+#   )
+# )
+# 
+# prev_statesDC <- purrr::map_dfr(2011:2024, function(yr) {
+#   df_yr  <- des_all$variables %>% dplyr::filter(year == yr)
+#   des_yr <- survey::svydesign(id=~psu_id, strata=~strata_id, weights=~wt, data=df_yr, nest=TRUE)
+#   out <- survey::svymean(~any_binge_cdc, des_yr, na.rm=TRUE)
+#   rm(df_yr, des_yr); gc()
+#   tibble::tibble(year=as.integer(yr), est_statesDC=as.numeric(out)[1])
+# }) %>%
+#   dplyr::arrange(year)
+# 
+# prev_incl <- survey::svyby(
+#   ~any_binge_cdc, ~year, des_all_incl, survey::svymean, na.rm = TRUE
+# ) %>%
+#   dplyr::transmute(year = as.integer(year), est_incl = any_binge_cdc)
+# 
+# sens_overall <- dplyr::left_join(prev_statesDC, prev_incl, by = "year") %>%
+#   dplyr::mutate(diff_pp = (est_incl - est_statesDC) * 100) %>%
+#   dplyr::arrange(year)
+# 
+# readr::write_csv(sens_overall,
+#                  file.path(tab_dir, "sensitivity_territories_overall_prev_by_year.csv"))
+# 
+# rm(df_all_incl, des_all_incl); gc()
 
 # ============================================================
 # ---- Year × Age interaction — current drinkers ----
@@ -3395,6 +3484,35 @@ prev_abstention <- purrr::map_dfr(2011:2024, function(yr) {
 readr::write_csv(prev_abstention,
                  file.path(tab_dir, "sensitivity_abstention_prevalence_by_year.csv"))
 
+prev_participation_by_age <- purrr::map_dfr(2011:2024, function(yr) {
+  df_yr <- des_all$variables |>
+    dplyr::filter(year == yr, !is.na(age_fallback)) |>
+    dplyr::mutate(is_current_num = as.integer(is_current))
+  
+  des_yr <- survey::svydesign(id = ~psu_id, strata = ~strata_id,
+                              weights = ~wt, data = df_yr, nest = TRUE)
+  
+  out <- survey::svyby(~is_current_num, ~age_fallback, des_yr,
+                       survey::svymean, na.rm = TRUE, vartype = "ci") |>
+    tibble::as_tibble() |>
+    dplyr::mutate(year = yr)
+  
+  rm(df_yr, des_yr); gc()
+  out
+}) |>
+  dplyr::transmute(
+    age_fallback = as.character(age_fallback),
+    year         = as.integer(year),
+    pct_current  = is_current_num * 100,
+    lcl          = ci_l * 100,
+    ucl          = ci_u * 100
+  ) |>
+  dplyr::arrange(age_fallback, year)
+
+readr::write_csv(prev_participation_by_age,
+                 file.path(tab_dir, "sensitivity_abstention_by_age_by_year.csv"))
+
+
 # ===== D2) By sex — unadjusted, current drinkers =====
 prev_sex_curr <- purrr::map_dfr(2011:2024, function(yr) {
   df_yr  <- des_curr$variables %>%
@@ -3416,6 +3534,8 @@ readr::write_csv(prev_sex_curr,
 readr::write_csv(prev_sex_curr %>%
                    dplyr::mutate(dplyr::across(c(est,lcl,ucl), ~.x*100)),
                  file.path(tab_dir, "main_prev_any_binge_current_by_sex_CI_pct.csv"))
+
+
 
 # ===== E1b) By age group (10-bin) — unadjusted, current drinkers =====
 prev_age10_curr <- purrr::map_dfr(2011:2024, function(yr) {
@@ -3569,3 +3689,255 @@ prev_educ_curr_male_ageadj %>%
   ))
 
 message("Sex-stratified education Joinpoint exports complete")
+
+# ============================================================
+# ---- Sex × Age interaction (5-bin: age_fallback) ----
+# ============================================================
+des_all <- stats::update(
+  des_all,
+  age_fallback = factor(
+    gsub("\u2013", "-", as.character(age_fallback)),
+    levels = c("18-24", "25-34", "35-49", "50-64", "65+")
+  )
+)
+
+des_curr <- subset(des_all, is_current)
+
+
+fit_sex_age5 <- survey::svyglm(
+  any_binge_cdc ~ sex_f * age_fallback + year_lin + race6_nat +
+    educ4 + income6 + employ3 + marital3 + insured + factor(region),
+  design = des_curr,
+  family = quasipoisson(link = "log")
+)
+
+# Joint Wald test
+wt_sex_age5    <- survey::regTermTest(fit_sex_age5, ~ sex_f:age_fallback)
+sex_age5_test  <- mk_wald_row(wt_sex_age5, "SexXAge5")
+
+# Diagnostics
+diag_sex_age5  <- diag_quasi(fit_sex_age5, "PR current, Sex×Age5")
+
+# Store coef/vcov then remove model
+age5_levels    <- levels(des_curr$variables$age_fallback)
+co_sa5         <- stats::coef(fit_sex_age5)
+vc_sa5         <- stats::vcov(fit_sex_age5)
+
+# G-computation: marginal prevalence by sex x age_fallback
+df_curr <- des_curr$variables
+
+age_levels <- levels(df_curr$age_fallback)
+sex_levels <- c("Female", "Male")
+
+marginal_prev <- purrr::map_dfr(age_levels, function(ag) {
+  purrr::map_dfr(sex_levels, function(sx) {
+    
+    # Set sex and age for everyone, keep all other covariates as observed
+    df_counter <- df_curr |>
+      dplyr::mutate(
+        sex_f        = factor(sx, levels = levels(df_curr$sex_f)),
+        age_fallback = factor(ag, levels = levels(df_curr$age_fallback))
+      )
+    
+    preds <- predict(fit_sex_age5,
+                     newdata = df_counter,
+                     type = "response")
+    
+    tibble::tibble(
+      sex       = sx,
+      age_group = ag,
+      marginal_prev = mean(as.numeric(preds), na.rm = TRUE) * 100
+    )
+  })
+})
+
+# Compute within-age male-to-female prevalence ratio
+marginal_wide <- marginal_prev |>
+  tidyr::pivot_wider(names_from = sex,
+                     values_from = marginal_prev) |>
+  dplyr::mutate(
+    PR_male_vs_female = Male / Female,
+    diff_pp = Male - Female
+  )
+
+readr::write_csv(marginal_wide,
+                 file.path(tab_dir, "adj_marginal_prev_SexByAge5_gcomp.csv"))
+
+print(marginal_wide)
+
+
+rm(fit_sex_age5); gc()
+
+# Sex-specific PR by age group (5-bin)
+# Reference: Female × 18-24
+sex_age5_pr <- purrr::map_dfr(age5_levels, function(ag) {
+  purrr::map_dfr(c("Female", "Male"), function(sx) {
+    
+    # Female 18-24 is the double reference — intercept only
+    if (sx == "Female" & ag == "18-24") {
+      b  <- 0
+      se <- 0
+      return(tibble::tibble(
+        sex = sx, age_group = ag,
+        PR = 1, LCL = NA_real_, UCL = NA_real_, p = NA_real_,
+        note = "reference"
+      ))
+    }
+    
+    # Age main effect (vs 18-24)
+    age_term <- if (ag == "18-24") NA_character_ else
+      paste0("age_fallback", ag)
+    
+    # Sex main effect (vs Female)
+    sex_term <- if (sx == "Female") NA_character_ else "sex_fMale"
+    
+    # Interaction term
+    int_term <- if (sx == "Female" | ag == "18-24") NA_character_ else
+      paste0("sex_fMale:age_fallback", ag)
+    
+    b <- 0
+    if (!is.na(age_term) && age_term %in% names(co_sa5))
+      b <- b + co_sa5[age_term]
+    if (!is.na(sex_term) && sex_term %in% names(co_sa5))
+      b <- b + co_sa5[sex_term]
+    if (!is.na(int_term) && int_term %in% names(co_sa5))
+      b <- b + co_sa5[int_term]
+    
+    # Delta method SE
+    terms_used <- c(age_term, sex_term, int_term)
+    terms_used <- terms_used[!is.na(terms_used) & terms_used %in% rownames(vc_sa5)]
+    se <- if (length(terms_used) == 0) 0 else
+      sqrt(sum(vc_sa5[terms_used, terms_used]))
+    
+    tibble::tibble(
+      sex = sx, age_group = ag,
+      PR  = exp(b),
+      LCL = exp(b - 1.96 * se),
+      UCL = exp(b + 1.96 * se),
+      p   = 2 * (1 - pnorm(abs(b / se))),
+      note = "estimated"
+    )
+  })
+})
+
+readr::write_csv(sex_age5_test,
+                 file.path(tab_dir, "adj_PR_currentdrinkers_interaction_SexByAge5_jointWald.csv"))
+readr::write_csv(sex_age5_pr,
+                 file.path(tab_dir, "adj_PR_currentdrinkers_SexByAge5.csv"))
+
+
+# ============================================================
+# ---- Sex × Age interaction (10-bin: age_group) ----
+# ============================================================
+
+fit_sex_age10 <- survey::svyglm(
+  any_binge_cdc ~ sex_f * age_group + year_lin + race6_nat +
+    educ4 + income6 + employ3 + marital3 + insured + factor(region),
+  design = des_curr,
+  family = quasipoisson(link = "log")
+)
+
+# Joint Wald test
+wt_sex_age10   <- survey::regTermTest(fit_sex_age10, ~ sex_f:age_group)
+sex_age10_test <- mk_wald_row(wt_sex_age10, "SexXAge10")
+
+# Diagnostics
+diag_sex_age10 <- diag_quasi(fit_sex_age10, "PR current, Sex×Age10")
+
+# Store coef/vcov then remove model
+age10_levels   <- levels(des_curr$variables$age_group)
+co_sa10        <- stats::coef(fit_sex_age10)
+vc_sa10        <- stats::vcov(fit_sex_age10)
+
+# G-computation: marginal prevalence by sex x age_group (10-bin)
+df_curr <- des_curr$variables
+
+age10_levels <- levels(df_curr$age_group)
+sex_levels   <- c("Female", "Male")
+
+marginal_prev_10 <- purrr::map_dfr(age10_levels, function(ag) {
+  purrr::map_dfr(sex_levels, function(sx) {
+    
+    df_counter <- df_curr |>
+      dplyr::mutate(
+        sex_f     = factor(sx, levels = levels(df_curr$sex_f)),
+        age_group = factor(ag, levels = levels(df_curr$age_group))
+      )
+    
+    preds <- predict(fit_sex_age10,
+                     newdata   = df_counter,
+                     type      = "response")
+    
+    tibble::tibble(
+      sex       = sx,
+      age_group = ag,
+      marginal_prev = mean(as.numeric(preds), na.rm = TRUE) * 100
+    )
+  })
+})
+
+# Within-age sex gap
+marginal_wide_10 <- marginal_prev_10 |>
+  tidyr::pivot_wider(names_from  = sex,
+                     values_from = marginal_prev) |>
+  dplyr::mutate(
+    PR_male_vs_female = Male / Female,
+    diff_pp           = Male - Female
+  )
+
+readr::write_csv(marginal_wide_10,
+                 file.path(tab_dir, "adj_marginal_prev_SexByAge10_gcomp.csv"))
+
+print(marginal_wide_10)
+
+rm(fit_sex_age10); gc()
+
+# Sex-specific PR by age group (10-bin)
+# Reference: Female × 18-24
+sex_age10_pr <- purrr::map_dfr(age10_levels, function(ag) {
+  purrr::map_dfr(c("Female", "Male"), function(sx) {
+    
+    if (sx == "Female" & ag == "18-24") {
+      return(tibble::tibble(
+        sex = sx, age_group = ag,
+        PR = 1, LCL = NA_real_, UCL = NA_real_, p = NA_real_,
+        note = "reference"
+      ))
+    }
+    
+    age_term <- if (ag == "18-24") NA_character_ else
+      paste0("age_group", ag)
+    sex_term <- if (sx == "Female") NA_character_ else "sex_fMale"
+    int_term <- if (sx == "Female" | ag == "18-24") NA_character_ else
+      paste0("sex_fMale:age_group", ag)
+    
+    b <- 0
+    if (!is.na(age_term) && age_term %in% names(co_sa10))
+      b <- b + co_sa10[age_term]
+    if (!is.na(sex_term) && sex_term %in% names(co_sa10))
+      b <- b + co_sa10[sex_term]
+    if (!is.na(int_term) && int_term %in% names(co_sa10))
+      b <- b + co_sa10[int_term]
+    
+    terms_used <- c(age_term, sex_term, int_term)
+    terms_used <- terms_used[!is.na(terms_used) & terms_used %in% rownames(vc_sa10)]
+    se <- if (length(terms_used) == 0) 0 else
+      sqrt(sum(vc_sa10[terms_used, terms_used]))
+    
+    tibble::tibble(
+      sex = sx, age_group = ag,
+      PR  = exp(b),
+      LCL = exp(b - 1.96 * se),
+      UCL = exp(b + 1.96 * se),
+      p   = 2 * (1 - pnorm(abs(b / se))),
+      note = "estimated"
+    )
+  })
+})
+
+readr::write_csv(sex_age10_test,
+                 file.path(tab_dir, "adj_PR_currentdrinkers_interaction_SexByAge10_jointWald.csv"))
+readr::write_csv(sex_age10_pr,
+                 file.path(tab_dir, "adj_PR_currentdrinkers_SexByAge10.csv"))
+
+message("Sex x Age interaction models complete")
