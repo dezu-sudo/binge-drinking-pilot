@@ -883,6 +883,9 @@ df_all <- df_all %>%
     psu_id    = as.integer(factor(psu))
   )
 
+# Rescale weights for 14-year pooling per NCHS guidance (preserves point estimates, corrects SEs)
+df_all$wt <- df_all$wt / 14
+
 # 2) Rebuild the survey design objects that depend on age_group
 des_all <- survey::svydesign(id = ~psu_id, strata = ~strata_id, weights = ~wt, data = df_all, nest = TRUE)
 
@@ -2375,6 +2378,7 @@ diag_quasi <- function(fit, label) {
   )
 }
 
+
 # ==== Primary models ====
 #---- Model 1 ----
 fit_pr_curr_lin <- survey::svyglm(
@@ -2385,10 +2389,19 @@ fit_pr_curr_lin <- survey::svyglm(
 )
 
 marg_prev_curr <- purrr::map_dfr(2011:2024, function(yr) {
-  nd    <- des_curr$variables %>%
+  nd <- des_curr$variables %>%
     dplyr::mutate(year_lin = as.numeric(yr) - 2011)
   preds <- predict(fit_pr_curr_lin, newdata = nd, type = "response")
-  tibble::tibble(year = yr, marg_prev = mean(as.numeric(preds), na.rm = TRUE))
+  
+  model_vars <- c("year_lin", "sex_f", "age_group", "race6_nat",
+                  "educ4", "income6", "employ3", "marital3", "insured", "region")
+  cc_idx     <- complete.cases(nd[, model_vars])
+  gcomp_full <- rep(NA_real_, nrow(des_curr$variables))
+  gcomp_full[cc_idx] <- as.numeric(preds)
+  wts <- weights(des_curr)
+  valid <- !is.na(gcomp_full)
+  mp <- weighted.mean(gcomp_full[valid], wts[valid])
+  tibble::tibble(year = yr, marg_prev = mp)
 })
 
 diag_curr_lin <- diag_quasi(fit_pr_curr_lin, "PR current, linear year")
@@ -2449,12 +2462,21 @@ fit_pr_all_lin <- survey::svyglm(
 
 # Marginal prevalence — needs full model
 marg_prev_all <- purrr::map_dfr(2011:2024, function(yr) {
-  nd    <- des_all$variables %>%
+  nd <- des_all$variables %>%
     dplyr::mutate(year_lin = as.numeric(yr) - 2011)
   preds <- predict(fit_pr_all_lin, newdata = nd, type = "response")
-  tibble::tibble(year = yr,
-                 marg_prev = mean(as.numeric(preds), na.rm = TRUE))
+  
+  model_vars <- c("year_lin", "sex_f", "age_group", "race6_nat",
+                  "educ4", "income6", "employ3", "marital3", "insured", "region")
+  cc_idx     <- complete.cases(nd[, model_vars])
+  gcomp_full <- rep(NA_real_, nrow(des_all$variables))
+  gcomp_full[cc_idx] <- as.numeric(preds)
+  wts <- weights(des_all)
+  valid <- !is.na(gcomp_full)
+  mp <- weighted.mean(gcomp_full[valid], wts[valid])
+  tibble::tibble(year = yr, marg_prev = mp)
 })
+
 
 # Full model intact — extract everything
 diag_all_lin  <- diag_quasi(fit_pr_all_lin, "PR all adults, linear year")
@@ -2584,31 +2606,10 @@ fit_pr_race_time_cat <- survey::svyglm(
   family = quasipoisson(link = "log")
 )
 
-# Manual Wald F test using stored coef and vcov
-co_cat <- coef(fit_pr_race_time_cat)
-vc_cat <- vcov(fit_pr_race_time_cat)
+# Joint Wald test for categorical year x race interaction (design-based df)
+wt_race_time_cat <- survey::regTermTest(fit_pr_race_time_cat, ~ factor(year):race6_nat)
 
-# Get the interaction terms
-int_terms <- grep("factor\\(year\\)\\d{4}:race6_nat",
-                  names(co_cat), value = TRUE)
-
-# Subset to just those terms
-b   <- co_cat[int_terms]
-V   <- vc_cat[int_terms, int_terms]
-
-# Wald F statistic
-q   <- length(b)
-F_stat <- as.numeric(t(b) %*% solve(V) %*% b) / q
-ddf    <- fit_pr_race_time_cat$df.residual
-p_val  <- pf(F_stat, df1 = q, df2 = ddf, lower.tail = FALSE)
-
-race_timecat_test <- tibble::tibble(
-  interaction = "Year(categorical)xRace",
-  Fstat       = F_stat,
-  df          = q,
-  ddf         = ddf,
-  p           = p_val
-)
+race_timecat_test <- mk_wald_row(wt_race_time_cat, "Year(categorical)xRace")
 
 
 # diag — needs full model
@@ -2685,6 +2686,7 @@ rm(fit_hi_curr); gc()
 # ============================================================
 des_curr_freq <- subset(des_curr,
                         !is.na(binge_episodes) & !is.na(drink_days) & drink_days > 0)
+saveRDS(des_curr_freq, file.path(PROJ_DIR, "data/cache/des_curr_freq.rds"))
 
 fit_freq <- survey::svyglm(
   binge_episodes ~ year_lin + sex_f + age_group + race6_nat +
@@ -3702,6 +3704,7 @@ des_all <- stats::update(
 )
 
 des_curr <- subset(des_all, is_current)
+saveRDS(des_curr, file.path(PROJ_DIR, "data/cache/des_curr.rds"))
 
 
 fit_sex_age5 <- survey::svyglm(
@@ -3739,14 +3742,21 @@ marginal_prev <- purrr::map_dfr(age_levels, function(ag) {
         age_fallback = factor(ag, levels = levels(df_curr$age_fallback))
       )
     
-    preds <- predict(fit_sex_age5,
-                     newdata = df_counter,
-                     type = "response")
+    preds <- predict(fit_sex_age5, newdata = df_counter, type = "response")
+    
+    model_vars <- c("sex_f", "age_fallback", "year_lin", "race6_nat",
+                    "educ4", "income6", "employ3", "marital3", "insured", "region")
+    cc_idx     <- complete.cases(df_counter[, model_vars])
+    gcomp_full <- rep(NA_real_, nrow(des_curr$variables))
+    gcomp_full[cc_idx] <- as.numeric(preds)
+    wts   <- weights(des_curr)
+    valid <- !is.na(gcomp_full)
+    mp    <- weighted.mean(gcomp_full[valid], wts[valid])
     
     tibble::tibble(
       sex       = sx,
       age_group = ag,
-      marginal_prev = mean(as.numeric(preds), na.rm = TRUE) * 100
+      marginal_prev = mp * 100
     )
   })
 })
@@ -3864,14 +3874,21 @@ marginal_prev_10 <- purrr::map_dfr(age10_levels, function(ag) {
         age_group = factor(ag, levels = levels(df_curr$age_group))
       )
     
-    preds <- predict(fit_sex_age10,
-                     newdata   = df_counter,
-                     type      = "response")
+preds <- predict(fit_sex_age10, newdata = df_counter, type = "response")
+    
+    model_vars <- c("sex_f", "age_group", "year_lin", "race6_nat",
+                    "educ4", "income6", "employ3", "marital3", "insured", "region")
+    cc_idx     <- complete.cases(df_counter[, model_vars])
+    gcomp_full <- rep(NA_real_, nrow(des_curr$variables))
+    gcomp_full[cc_idx] <- as.numeric(preds)
+    wts   <- weights(des_curr)
+    valid <- !is.na(gcomp_full)
+    mp    <- weighted.mean(gcomp_full[valid], wts[valid])
     
     tibble::tibble(
       sex       = sx,
       age_group = ag,
-      marginal_prev = mean(as.numeric(preds), na.rm = TRUE) * 100
+      marginal_prev = mp * 100
     )
   })
 })
@@ -3941,3 +3958,1321 @@ readr::write_csv(sex_age10_pr,
                  file.path(tab_dir, "adj_PR_currentdrinkers_SexByAge10.csv"))
 
 message("Sex x Age interaction models complete")
+
+
+# ============================================================
+# ===== SECTION P: MANUSCRIPT FIGURES & PUBLICATION TABLES ===
+# ============================================================
+# Standalone: reads all inputs from tab_dir CSVs so this block can be
+# re-run without re-running the full analysis.
+# Uses only packages present in this renv: ggplot2, scales, dplyr,
+# tidyr, purrr, readr, janitor, forcats, viridisLite, RColorBrewer.
+# Multi-panel figures are saved as separate labelled panels.
+# Outputs: PNG (320 dpi) + SVG to fig_dir; formatted CSVs to tab_dir.
+# ============================================================
+
+# ----- P0) Setup -----------------------------------------------------------
+suppressPackageStartupMessages({
+  library(tidyverse); library(scales); library(readr)
+  library(janitor);   library(viridisLite); library(RColorBrewer); library(ggrepel); library(patchwork); library(usmap)
+})
+
+if (!exists("PROJ_DIR")) {
+  PROJ_DIR <- tryCatch(
+    normalizePath(
+      "C:/Users/Anigma PC/Desktop/Binge Drinking Systematic Review/binge-drinking-pilot",
+      winslash = "/", mustWork = TRUE
+    ),
+    error = function(e) normalizePath(getwd(), winslash = "/")
+  )
+}
+tab_dir <- file.path(PROJ_DIR, "outputs/main/tables")
+fig_dir <- file.path(PROJ_DIR, "outputs/main/figures")
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+
+if (!exists("des_curr")) {
+  des_curr <- readRDS(file.path(PROJ_DIR, "data/cache/des_curr.rds"))
+}
+if (!exists("des_curr_freq")) {
+  des_curr_freq <- readRDS(file.path(PROJ_DIR, "data/cache/des_curr_freq.rds"))
+}
+
+# ---- Shared publication theme ----
+theme_ms <- function(base_size = 11) {
+  theme_classic(base_size = base_size) +
+    theme(
+      panel.grid.major.y  = element_line(color = "grey92", linewidth = 0.4),
+      panel.grid.major.x  = element_blank(),
+      axis.line    = element_line(color = "grey40", linewidth = 0.4),
+      axis.ticks   = element_line(color = "grey40", linewidth = 0.35),
+      axis.title   = element_text(size = rel(0.95)),
+      plot.title   = element_text(face = "bold", size = rel(1.05)),
+      plot.subtitle = element_text(color = "grey35", size = rel(0.90)),
+      plot.caption  = element_text(color = "grey45", size = rel(0.78), hjust = 0),
+      legend.position  = "bottom",
+      legend.title     = element_text(face = "bold", size = rel(0.9)),
+      legend.key.width = unit(1.6, "lines"),
+      strip.background = element_blank(),
+      strip.text  = element_text(face = "bold", size = rel(0.95)),
+      plot.margin = margin(8, 16, 8, 8)
+    )
+}
+
+save_fig <- function(p, fname, w = 8.5, h = 5.2, dpi = 320) {
+  ggsave(file.path(fig_dir, paste0(fname, ".png")), p,
+         width = w, height = h, units = "in", dpi = dpi, bg = "white")
+  ggsave(file.path(fig_dir, paste0(fname, ".svg")), p,
+         width = w, height = h, units = "in", bg = "white")
+  message("Saved: ", fname)
+}
+
+# COVID shading layer reused in multiple figures
+covid_band <- annotate("rect", xmin = 2019.5, xmax = 2020.5,
+                       ymin = -Inf, ymax = Inf, fill = "grey65", alpha = 0.45)
+covid_lbl  <- annotate("text", x = 2020, y = Inf,
+                       label = "COVID-19", vjust = 1.4, size = 2.7,
+                       color = "grey40", fontface = "italic")
+
+# Color palettes (color-blind accessible)
+pal_denom <- c("All adults" = "#2166AC", "Current drinkers" = "#CA0020")
+pal_sex   <- c("Female" = "#D01C8B", "Male"   = "#4DAC26")
+pal_age5  <- c("18-24" = "#4393C3", "25-34" = "#92C5DE",
+               "35-49" = "#F4A582", "50-64" = "#D6604D", "65+" = "#A50026")
+pal_race6 <- c(
+  "NH White"             = "#1F78B4",
+  "NH Black"             = "#E31A1C",
+  "Hispanic"             = "#FF7F00",
+  "NH Asian/NHPI"        = "#33A02C",
+  "NH AI/AN"             = "#6A3D9A",
+  "NH Other/Multiracial" = "#A6761D"
+)
+income6_lvls <- c("<$15k", "$15–<25k", "$25–<35k",
+                  "$35–<50k", "$50–<75k", "≥$75k", "Unknown")
+pal_income6 <- setNames(
+  c("#D73027","#FC8D59","#FDAE61","#91BFDB","#4575B4","#313695","grey70"),
+  income6_lvls
+)
+
+# Helper: read a prevalence CSV (prop scale) and convert to pct
+read_prev <- function(fname) {
+  readr::read_csv(file.path(tab_dir, fname), show_col_types = FALSE) %>%
+    dplyr::mutate(
+      est_pct = est * 100,
+      lcl_pct = lcl * 100,
+      ucl_pct = ucl * 100
+    )
+}
+
+
+# ===========================================================================
+# P1) FIGURE 1 — Dual-denominator age-adjusted prevalence trend (2011–2024)
+#     The paper's central finding: stable all-adults vs rising current-drinkers
+# ===========================================================================
+
+dat_all  <- read_prev("main_prev_any_binge_alladults_AGEADJ2000_CI_prop.csv") %>%
+  dplyr::mutate(denom = "All adults")
+dat_curr <- read_prev("main_prev_any_binge_current_AGEADJ2000_CI_prop.csv") %>%
+  dplyr::mutate(denom = "Current drinkers")
+dat_both <- dplyr::bind_rows(dat_all, dat_curr) %>%
+  dplyr::mutate(denom = factor(denom, levels = c("All adults", "Current drinkers")))
+
+# end-point labels
+ep_labs <- dat_both %>%
+  dplyr::filter(year == max(year)) %>%
+  dplyr::mutate(lab = sprintf("%.1f%%", est_pct))
+
+fig1 <- ggplot(dat_both, aes(x = year, y = est_pct,
+                              color = denom, fill = denom, group = denom)) +
+  covid_band + covid_lbl +
+  geom_ribbon(aes(ymin = lcl_pct, ymax = ucl_pct),
+              alpha = 0.30, color = NA) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 2.3) +
+  ggrepel::geom_text_repel(
+    data = ep_labs, aes(label = lab),
+    nudge_x = 0.4, direction = "y", size = 3.4,
+    segment.size = 0.3, show.legend = FALSE
+  ) +
+  scale_color_manual(values = pal_denom, name = "Denominator") +
+  scale_fill_manual(values  = pal_denom, name = "Denominator") +
+  scale_x_continuous(breaks = 2011:2024, expand = expansion(mult = c(0.01, 0.08))) +
+  scale_y_continuous(
+    name   = "Age-standardized prevalence (%)",
+    labels = label_number(suffix = "%", accuracy = 1),
+    limits = c(10, 40)
+  ) +
+  labs(
+    x        = NULL,
+    caption  = "Source: BRFSS LLCP 2011–2024."
+  ) +
+  theme_ms() +
+  theme(
+    legend.position = c(0.82, 0.92),
+    legend.background = element_rect(fill = "white", color = "grey80", linewidth = 0.3)
+  )
+
+save_fig(fig1, "fig1_dual_denominator_trend", w = 9, h = 5.5)
+
+
+# ===========================================================================
+# P2) FIGURE 2 — Age-group–specific binge drinking trends, current drinkers
+#     Shows year × age interaction: 18–34 declining, 35+ rising
+# ===========================================================================
+
+age_fallback_lvls <- c("18-24", "25-34", "35-49", "50-64", "65+")
+
+dat_age_curr <- read_prev("main_prev_any_binge_current_by_age_fallback_CI_prop.csv") %>%
+  dplyr::rename(age_fallback = 1) %>%
+  dplyr::mutate(
+    age_fallback = factor(
+      gsub("–", "-", age_fallback),
+      levels = age_fallback_lvls
+    )
+  ) %>%
+  dplyr::filter(!is.na(age_fallback))
+
+# Annual-PR by age from interaction model (for annotation)
+age_pr <- readr::read_csv(
+  file.path(tab_dir, "adj_PR_currentdrinkers_TrendByAge_annualPR.csv"),
+  show_col_types = FALSE
+) %>%
+  dplyr::mutate(
+    age_group = factor(gsub("–", "-", age_group), levels = age_fallback_lvls),
+    direction = dplyr::if_else(PR_per_year >= 1, "Increasing", "Decreasing"),
+    pr_lab = sprintf("Annual PR: %.3f%s",
+                     PR_per_year,
+                     ifelse(p < 0.05, "*", ""))
+  )
+
+fig2a <- ggplot(dat_age_curr,
+                aes(x = year, y = est_pct, color = age_fallback, group = age_fallback)) +
+  covid_band +
+  geom_ribbon(aes(ymin = lcl_pct, ymax = ucl_pct, fill = age_fallback),
+              alpha = 0.40, color = NA) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 1.9) +
+  scale_color_manual(values = pal_age5, name = "Age group") +
+  scale_fill_manual( values = pal_age5, name = "Age group") +
+  scale_x_continuous(breaks = c(2011, 2014, 2017, 2020, 2024)) +
+  scale_y_continuous(labels = label_number(suffix = "%", accuracy = 1),
+                     name = "Binge drinking prevalence (%)") +
+  labs(
+    title = "A.  Unadjusted prevalence by age group",
+    x = NULL
+  ) +
+  theme_ms() + theme(legend.position = "right")
+
+# Panel B: age-specific annual PR forest plot
+fig2b <- ggplot(age_pr,
+                aes(x = PR_per_year, y = forcats::fct_rev(age_group),
+                    color = direction)) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50", linewidth = 0.7) +
+  geom_errorbar(aes(xmin = LCL, xmax = UCL), width = 0.25, linewidth = 0.9, orientation = "y") +
+  geom_point(size = 3.2) +
+  ggrepel::geom_text_repel(aes(label = pr_lab), size = 3.0,
+                           nudge_x = 0.002, direction = "y",
+                           show.legend = FALSE) +
+  scale_color_manual(values = c("Increasing" = "#CA0020", "Decreasing" = "#2166AC"),
+                     name = NULL) +
+  scale_x_continuous(
+    name   = "Annual prevalence ratio (PR)",
+    labels = label_number(accuracy = 0.001),
+    limits = c(0.984, 1.024)
+  ) +
+  labs(
+    title = "B.  Adjusted annual PR by age group",
+    y = NULL
+  ) +
+  theme_ms() + theme(legend.position = "none")
+
+fig2 <- fig2a + fig2b +
+  patchwork::plot_annotation(
+    caption = "Source: BRFSS LLCP 2011–2024.",
+    theme = theme(
+      plot.caption = element_text(color = "grey45", size = 8.5, hjust = 0)
+    )
+  ) +
+  patchwork::plot_layout(widths = c(1.55, 1))
+
+save_fig(fig2, "fig2_age_trends_current_drinkers", w = 12, h = 5.5)
+
+
+# ===========================================================================
+# P3) FIGURE 3 — Sex-specific trends and convergence, current drinkers
+#     Female prevalence rising, male slightly declining → narrowing gap
+# ===========================================================================
+
+dat_sex_curr <- read_prev("main_prev_any_binge_current_by_sex_AGEADJ2000_CI_prop.csv") %>%
+  dplyr::rename(sex = 1)
+
+sex_pr <- readr::read_csv(
+  file.path(tab_dir, "adj_PR_currentdrinkers_TrendBySex_annualPR.csv"),
+  show_col_types = FALSE
+)
+
+# Compute M-F prevalence gap per year
+gap_dat <- dat_sex_curr %>%
+  dplyr::select(sex, year, est_pct) %>%
+  tidyr::pivot_wider(names_from = sex, values_from = est_pct) %>%
+  dplyr::mutate(gap_pp = Male - Female)
+
+fig3a <- ggplot(dat_sex_curr,
+                aes(x = year, y = est_pct, color = sex, fill = sex)) +
+  covid_band +
+  geom_ribbon(aes(ymin = lcl_pct, ymax = ucl_pct), alpha = 0.28, color = NA) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 2.2) +
+  scale_color_manual(values = pal_sex, name = "Sex") +
+  scale_fill_manual( values = pal_sex, name = "Sex") +
+  scale_x_continuous(breaks = c(2011, 2014, 2017, 2020, 2024)) +
+  scale_y_continuous(labels = label_number(suffix = "%", accuracy = 1),
+                     name = "Age-adjusted binge drinking prevalence (%)") +
+  labs(
+    title = "A.  Age-adjusted prevalence by sex",
+    x = NULL
+  ) +
+  theme_ms()
+
+fig3b <- ggplot(gap_dat, aes(x = year, y = gap_pp)) +
+  covid_band +
+  geom_col(fill = "#762A83", alpha = 0.75, width = 0.7) +
+  geom_hline(yintercept = 0, linewidth = 0.6, color = "grey50") +
+  geom_smooth(method = "lm", se = FALSE, color = "black",
+              linetype = "dashed", linewidth = 0.8) +
+  scale_x_continuous(breaks = c(2011, 2014, 2017, 2020, 2024)) +
+  scale_y_continuous(name = "Male − Female gap (pp)",
+                     labels = label_number(suffix = " pp", accuracy = 1)) +
+  labs(
+    title = "B.  Male–female prevalence gap (pp)",
+    x = NULL
+  ) +
+  theme_ms()
+
+fig3 <- fig3a + fig3b +
+  patchwork::plot_annotation(
+    caption = "Source: BRFSS LLCP 2011–2024.",
+    theme = theme(
+      plot.caption = element_text(color = "grey45", size = 8.5, hjust = 0)
+    )
+  )
+
+save_fig(fig3, "fig3_sex_trends_convergence", w = 12, h = 5.5)
+
+
+# ===========================================================================
+# P4) FIGURE 4 — Race/ethnicity–specific trends, current drinkers
+#     NH Black current drinkers show steepest adjusted annual increase
+# ===========================================================================
+
+dat_race_curr <- read_prev(
+  "main_prev_any_binge_current_by_race6_AGEADJ2000_CI_prop.csv"
+) %>%
+  dplyr::rename(race6_nat = 1) %>%
+  dplyr::mutate(
+    race6_nat = factor(race6_nat, levels = names(pal_race6))
+  ) %>%
+  dplyr::filter(!is.na(race6_nat))
+
+race_pr <- readr::read_csv(
+  file.path(tab_dir, "adj_PR_currentdrinkers_TrendByRace_annualPR.csv"),
+  show_col_types = FALSE
+) %>%
+  dplyr::mutate(
+    race6_nat  = factor(race6_nat, levels = names(pal_race6)),
+    sig        = dplyr::if_else(p < 0.05, "*", ""),
+    pr_lab     = sprintf("%.3f%s", PR_per_year, sig),
+    direction  = dplyr::if_else(PR_per_year >= 1, "Increasing", "Decreasing")
+  )
+
+fig4a <- ggplot(dat_race_curr,
+                aes(x = year, y = est_pct, color = race6_nat, group = race6_nat)) +
+  covid_band +
+  geom_line(linewidth = 1) +
+  geom_point(size = 1.8) +
+  scale_color_manual(values = pal_race6, name = NULL) +
+  scale_x_continuous(breaks = c(2011, 2014, 2017, 2020, 2024)) +
+  scale_y_continuous(labels = label_number(suffix = "%", accuracy = 1),
+                     name = "Age-adjusted binge drinking prevalence (%)") +
+  labs(
+    title = "A.  Age-adjusted prevalence by race/ethnicity",
+    x = NULL
+  ) +
+  theme_ms() +
+  theme(legend.position = "right",
+        legend.text = element_text(size = 8.5))
+
+fig4b <- ggplot(race_pr,
+                aes(x = PR_per_year,
+                    y = forcats::fct_reorder(race6_nat, PR_per_year),
+                    color = direction)) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50", linewidth = 0.7) +
+  geom_errorbar(aes(xmin = LCL, xmax = UCL), width = 0.3, linewidth = 0.9, orientation = "y") +
+  geom_point(size = 3.2) +
+  geom_text(aes(x = UCL, label = pr_lab), hjust = -0.15, size = 3.0,
+            show.legend = FALSE) +
+  scale_color_manual(values = c("Increasing" = "#CA0020", "Decreasing" = "#2166AC"),
+                     name = NULL) +
+  scale_x_continuous(
+    name   = "Annual prevalence ratio (PR)",
+    labels = label_number(accuracy = 0.001)
+  ) +
+  coord_cartesian(xlim = c(0.978, 1.022)) +
+  labs(
+    title = "B.  Adjusted annual PR by race/ethnicity",
+    y = NULL
+  ) +
+  theme_ms() + theme(legend.position = "none")
+
+fig4 <- fig4a + fig4b +
+  patchwork::plot_annotation(
+    caption = "Source: BRFSS LLCP 2011–2024.",
+    theme = theme(
+      plot.caption = element_text(color = "grey45", size = 8.5, hjust = 0)
+    )
+  ) +
+  patchwork::plot_layout(widths = c(1.6, 1))
+
+save_fig(fig4, "fig4_race_trends_current_drinkers", w = 13, h = 5.5)
+
+
+# ===========================================================================
+# P5) FIGURE 5 — Comprehensive subgroup annual-PR forest plot
+#     Synthesizes age, sex, race/ethnicity, and income interaction results
+# ===========================================================================
+
+age_pr_fp <- readr::read_csv(
+  file.path(tab_dir, "adj_PR_currentdrinkers_TrendByAge_annualPR.csv"),
+  show_col_types = FALSE
+) %>%
+  dplyr::transmute(
+    subgroup = factor(gsub("–", "-", age_group), levels = age_fallback_lvls),
+    domain   = "Age group",
+    PR_per_year, LCL, UCL, p
+  )
+
+sex_pr_fp <- readr::read_csv(
+  file.path(tab_dir, "adj_PR_currentdrinkers_TrendBySex_annualPR.csv"),
+  show_col_types = FALSE
+) %>%
+  dplyr::transmute(
+    subgroup    = factor(stratum, levels = c("Female", "Male")),
+    domain      = "Sex",
+    PR_per_year, LCL, UCL, p
+  )
+
+race_pr_fp <- readr::read_csv(
+  file.path(tab_dir, "adj_PR_currentdrinkers_TrendByRace_annualPR.csv"),
+  show_col_types = FALSE
+) %>%
+  dplyr::transmute(
+    subgroup    = factor(race6_nat, levels = names(pal_race6)),
+    domain      = "Race/ethnicity",
+    PR_per_year, LCL, UCL, p
+  )
+
+income_pr_fp <- readr::read_csv(
+  file.path(tab_dir, "adj_PR_currentdrinkers_TrendByIncome_annualPR.csv"),
+  show_col_types = FALSE
+) %>%
+  dplyr::filter(!is.na(PR_per_year)) %>%
+  dplyr::mutate(
+    income6 = dplyr::case_when(
+      startsWith(as.character(income6), "<")   ~ "<$15k",
+      startsWith(as.character(income6), "$15") ~ "$15-<25k",
+      startsWith(as.character(income6), "$25") ~ "$25-<35k",
+      startsWith(as.character(income6), "$35") ~ "$35-<50k",
+      startsWith(as.character(income6), "$50") ~ "$50-<75k",
+      as.character(income6) == "Unknown"       ~ "Unknown",
+      TRUE                                     ~ ">=$75k"
+    ),
+    income6 = factor(income6,
+                     levels = c("<$15k", "$15-<25k", "$25-<35k",
+                                "$35-<50k", "$50-<75k", ">=$75k",
+                                "Unknown"))
+  ) %>%
+  dplyr::filter(!is.na(income6), income6 != "Unknown") %>%
+  dplyr::transmute(
+    subgroup    = income6,
+    domain      = "Household income",
+    PR_per_year, LCL, UCL, p
+  )
+
+forest_dat <- dplyr::bind_rows(age_pr_fp, sex_pr_fp, race_pr_fp, income_pr_fp) %>%
+  dplyr::mutate(
+    domain   = factor(domain, levels = c("Age group","Sex","Race/ethnicity","Household income")),
+    sig_star = dplyr::if_else(p < 0.05, "★", ""),
+    pr_label = sprintf("%.3f%s", PR_per_year, sig_star),
+    ci_label = sprintf("(%.3f–%.3f)", LCL, UCL),
+    subgroup = as.character(subgroup)
+  ) %>%
+  dplyr::arrange(domain, subgroup) %>%
+  dplyr::mutate(
+    row_id = dplyr::row_number(),
+    direction = dplyr::if_else(PR_per_year >= 1, "Rising", "Declining")
+  )
+
+# Insert domain spacers
+spacers <- forest_dat %>%
+  dplyr::distinct(domain) %>%
+  dplyr::mutate(subgroup = as.character(domain),
+                row_id   = NA_integer_,
+                is_header = TRUE)
+
+forest_dat <- forest_dat %>%
+  dplyr::mutate(is_header = FALSE) %>%
+  dplyr::bind_rows(spacers) %>%
+  dplyr::arrange(domain, is_header, subgroup)
+
+fig5 <- forest_dat %>%
+  dplyr::filter(!is_header) %>%
+  dplyr::filter(!is.na(PR_per_year)) %>%
+  dplyr::mutate(
+    # build y-axis label with bold domain headers via ggtext::element_markdown
+    subgroup = factor(subgroup,
+                      levels = c(
+                        ">=$75k", "$50-<75k", "$35-<50k",
+                        "$25-<35k", "$15-<25k", "<$15k",
+                        "NH Other/Multiracial", "NH Asian/NHPI",
+                        "NH AI/AN", "NH Black", "Hispanic", "NH White",
+                        "Male", "Female",
+                        "18-24", "25-34", "35-49", "50-64", "65+"
+                      ))
+  ) %>%
+  ggplot(aes(x = PR_per_year, y = subgroup, color = direction)) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50", linewidth = 0.75) +
+  geom_errorbar(aes(xmin = LCL, xmax = UCL), width = 0.30, linewidth = 0.85, orientation = "y") +
+  geom_point(size = 2.8) +
+  geom_text(aes(x = 1.023, label = pr_label), hjust = 0, size = 2.9,
+            show.legend = FALSE, color = "grey20") +
+  geom_text(aes(x = 1.038, label = ci_label), hjust = 0, size = 2.6,
+            show.legend = FALSE, color = "grey40") +
+  facet_grid(domain ~ ., scales = "free_y", space = "free") +
+  scale_color_manual(values = c("Rising" = "#CA0020", "Declining" = "#2166AC"),
+                     name = "Annual trend") +
+  scale_x_continuous(
+    name   = "Annual prevalence ratio (PR)",
+    limits = c(0.982, 1.060),
+    labels = label_number(accuracy = 0.001),
+    breaks = c(0.985, 0.990, 0.995, 1.000, 1.005, 1.010, 1.015, 1.020)
+  ) +
+  labs(
+    y       = NULL,
+    caption = "Source: BRFSS LLCP 2011–2024."
+  ) +
+  theme_ms(base_size = 10) +
+  theme(
+    legend.position = "bottom",
+    panel.spacing   = unit(0.6, "lines"),
+    strip.text      = element_text(face = "bold", size = rel(0.85)),
+    plot.margin     = margin(8, 40, 8, 8)
+  )
+
+save_fig(fig5, "fig5_subgroup_annual_PR_forest", w = 11, h = 15)
+
+
+# ===========================================================================
+# P6) FIGURE 6 — US state choropleth of binge-drinking annual trend
+#     Current drinkers; PR per year; BH-adjusted significance highlighted
+# ===========================================================================
+
+state_trends <- readr::read_csv(
+  file.path(tab_dir, "main_state_trends_current_AGEADJ2000_PR.csv"),
+  show_col_types = FALSE
+) %>%
+  dplyr::filter(!is.na(PR_per_year)) %>%
+  dplyr::mutate(
+    fips  = as.character(sprintf("%02d", state_code)),
+    sig   = p_adj_bh < 0.05,
+    trend = dplyr::case_when(
+      sig & PR_per_year > 1  ~ "Significant increase",
+      sig & PR_per_year <= 1 ~ "Significant decrease",
+      TRUE                   ~ "No significant trend"
+    )
+  )
+
+# Panel A: choropleth of PR_per_year (continuous)
+fig6a <- usmap::plot_usmap(
+  data   = state_trends,
+  values = "PR_per_year",
+  color  = "white",
+  size   = 0.25
+) +
+  scale_fill_gradientn(
+    name   = "Annual PR",
+    colors = c("#2166AC","#92C5DE","#eee1e1","#F4A582","#CA0020"),
+    limits = c(0.990, 1.018),
+    labels = label_number(accuracy = 0.001),
+    guide  = guide_colorbar(barwidth = 8, barheight = 0.6, title.position = "top")
+  ) +
+  labs(title = "A.  Annual PR (continuous)") +
+  theme_void(base_size = 10) +
+  theme(
+    plot.title  = element_text(face = "bold", size = 10),
+    legend.position = "bottom",
+    legend.title = element_text(size = 8.5, face = "bold")
+  )
+
+# Panel B: categorical significance map
+pal_trend <- c(
+  "Significant increase" = "#CA0020",
+  "No significant trend" = "#7F7F7F",
+  "Significant decrease" = "#2166AC"
+)
+
+fig6b <- usmap::plot_usmap(
+  data   = state_trends,
+  values = "trend",
+  color  = "white",
+  size   = 0.25
+) +
+  scale_fill_manual(
+    name   = NULL,
+    values = pal_trend,
+    guide  = guide_legend(
+      nrow = 1,
+      override.aes = list(color = "grey50", size = 0.2)
+    )
+  ) +
+  labs(title = "B.  Significance (BH-adjusted)") +
+  theme_void(base_size = 10) +
+  theme(
+    plot.title  = element_text(face = "bold", size = 10),
+    legend.position = "bottom",
+    legend.text = element_text(size = 8.5)
+  )
+
+fig6 <- fig6a + fig6b +
+  patchwork::plot_annotation(
+    caption = "Source: BRFSS LLCP 2011–2024.",
+    theme = theme(
+      plot.caption = element_text(color = "grey45", size = 8.5, hjust = 0)
+    )
+  )
+
+save_fig(fig6, "fig6_state_choropleth_current_drinkers", w = 14, h = 6.5)
+
+
+# ===========================================================================
+# P7) FIGURE 7 — SES gradient reversal (all adults vs current drinkers)
+#     Demonstrates denominator artifact: higher-SES appears at-risk in
+#     all-adults estimates; lower-SES bears highest burden among drinkers
+# ===========================================================================
+
+tab1_all_csv  <- readr::read_csv(
+  file.path(tab_dir, "table1_alladults_binge_prev_by_covariate.csv"),
+  show_col_types = FALSE
+)
+tab1_curr_csv <- readr::read_csv(
+  file.path(tab_dir, "table1_current_binge_prev_by_covariate.csv"),
+  show_col_types = FALSE
+)
+
+educ_lvls   <- c("<HS", "HS/GED", "Some college/AA", "College")
+income_lvls_t1 <- c("<$15k", "$15–<25k", "$25–<35k",
+                    "$35–<50k", "$50–<75k", "≥$75k")
+
+make_ses_plot <- function(tab_all, tab_curr, var, lvls, x_lim = c(10, 50),
+                          panel_title = "") {
+  d <- dplyr::bind_rows(
+    tab_all  %>%
+      dplyr::filter(variable == var, level %in% lvls) %>%
+      dplyr::mutate(denom = "All adults"),
+    tab_curr %>%
+      dplyr::filter(variable == var, level %in% lvls) %>%
+      dplyr::mutate(denom = "Current drinkers")
+  ) %>%
+    dplyr::mutate(
+      level = factor(level, levels = lvls),
+      denom = factor(denom, levels = c("All adults", "Current drinkers"))
+    )
+
+  ggplot(d, aes(x = prev_binge, y = level, color = denom, shape = denom)) +
+    geom_errorbar(aes(xmin = prev_binge_lcl, xmax = prev_binge_ucl),
+                  width = 0.3, linewidth = 0.85, orientation = "y") +
+    geom_point(size = 2.8) +
+    scale_color_manual(values = pal_denom, name = "Denominator") +
+    scale_shape_manual(values = c(16, 17), name = "Denominator") +
+    scale_x_continuous(
+      name   = "Binge drinking prevalence (%)",
+      limits = x_lim,
+      labels = label_number(suffix = "%", accuracy = 1)
+    ) +
+    labs(title = panel_title, y = NULL) +
+    theme_ms(base_size = 10) +
+    theme(legend.position = "none")
+}
+
+fig7a <- make_ses_plot(tab1_all_csv, tab1_curr_csv,
+                       "educ4", educ_lvls, x_lim = c(10, 50),
+                       panel_title = "A.  By educational attainment")
+
+fig7b <- make_ses_plot(tab1_all_csv, tab1_curr_csv,
+                       "income6", income_lvls_t1, x_lim = c(10, 50),
+                       panel_title = "B.  By household income")
+
+fig7 <- (fig7a + theme(legend.position = "right")) +
+  (fig7b + theme(legend.position = "right")) +
+  patchwork::plot_annotation(
+    caption = "Source: BRFSS LLCP 2011–2024.",
+    theme = theme(
+      plot.caption = element_text(color = "grey45", size = 8.5, hjust = 0)
+    )
+  )
+
+save_fig(fig7, "fig7_SES_gradient_reversal", w = 12, h = 6)
+
+
+# ===========================================================================
+# P8) FIGURE 8 — Drinking participation sensitivity (abstention trends)
+#     Age-stratified drinking participation: rising overall but falling in youth
+# ===========================================================================
+
+dat_abs_overall <- readr::read_csv(
+  file.path(tab_dir, "sensitivity_abstention_prevalence_by_year.csv"),
+  show_col_types = FALSE
+)
+
+dat_abs_age <- readr::read_csv(
+  file.path(tab_dir, "sensitivity_abstention_by_age_by_year.csv"),
+  show_col_types = FALSE
+) %>%
+  dplyr::mutate(
+    age_fallback = factor(
+      gsub("–", "-", age_fallback),
+      levels = age_fallback_lvls
+    )
+  )
+
+fig8a <- ggplot(dat_abs_overall, aes(x = year, y = pct_current)) +
+  covid_band + covid_lbl +
+  geom_ribbon(aes(ymin = lcl, ymax = ucl), alpha = 0.35, fill = "grey50") +
+  geom_line(linewidth = 1.1, color = "grey30") +
+  geom_point(size = 2.2, color = "grey30") +
+  scale_x_continuous(breaks = c(2011, 2014, 2017, 2020, 2024)) +
+  scale_y_continuous(
+    name   = "% adults reporting current drinking",
+    labels = label_number(suffix = "%", accuracy = 1),
+    limits = c(40, 55)
+  ) +
+  labs(
+    title = "A.  Overall current drinking participation",
+    x = NULL
+  ) +
+  theme_ms()
+
+fig8b <- ggplot(dat_abs_age,
+                aes(x = year, y = pct_current, color = age_fallback, group = age_fallback)) +
+  covid_band +
+  geom_ribbon(aes(ymin = lcl, ymax = ucl, fill = age_fallback),
+              alpha = 0.35, color = NA) +
+  geom_line(linewidth = 1.0) +
+  geom_point(size = 1.8) +
+  scale_color_manual(values = pal_age5, name = "Age group") +
+  scale_fill_manual( values = pal_age5, name = "Age group") +
+  scale_x_continuous(breaks = c(2011, 2014, 2017, 2020, 2024)) +
+  scale_y_continuous(
+    name   = "% reporting current drinking",
+    labels = label_number(suffix = "%", accuracy = 1)
+  ) +
+  labs(
+    title = "B.  By age group",
+    x = NULL
+  ) +
+  theme_ms() + theme(legend.position = "right")
+
+fig8 <- fig8a + fig8b +
+  patchwork::plot_annotation(
+    caption = "Source: BRFSS LLCP 2011–2024.",
+    theme = theme(
+      plot.caption = element_text(color = "grey45", size = 8.5, hjust = 0)
+    )
+  )
+
+save_fig(fig8, "fig8_drinking_participation_sensitivity", w = 12, h = 5.5)
+
+
+# ===========================================================================
+# P9) SUPPLEMENTARY FIGURE S1 — Adjusted marginal prevalence comparison
+#     G-computation output: adjusting for covariates reveals divergent trends
+# ===========================================================================
+
+marg_all  <- readr::read_csv(
+  file.path(tab_dir, "adj_marginal_prev_alladults_byyear.csv"),
+  show_col_types = FALSE
+) %>% dplyr::mutate(denom = "All adults",       marg_pct = marg_prev * 100)
+
+marg_curr <- readr::read_csv(
+  file.path(tab_dir, "adj_marginal_prev_currentdrinkers_byyear.csv"),
+  show_col_types = FALSE
+) %>% dplyr::mutate(denom = "Current drinkers", marg_pct = marg_prev * 100)
+
+marg_both <- dplyr::bind_rows(marg_all, marg_curr) %>%
+  dplyr::mutate(denom = factor(denom, levels = c("All adults", "Current drinkers")))
+
+# Also show unadjusted for comparison
+unadj_both <- dplyr::bind_rows(
+  read_prev("main_prev_any_binge_alladults_AGEADJ2000_CI_prop.csv") %>%
+    dplyr::mutate(denom = "All adults",       type = "Unadjusted (age-standardized)"),
+  read_prev("main_prev_any_binge_current_AGEADJ2000_CI_prop.csv") %>%
+    dplyr::mutate(denom = "Current drinkers", type = "Unadjusted (age-standardized)")
+) %>%
+  dplyr::mutate(marg_pct = est_pct,
+                denom    = factor(denom, levels = c("All adults", "Current drinkers")))
+
+# Combine into one long data frame so facet_wrap can assign each series to
+# its own panel with an independent y-scale.  CIs exist only for unadjusted.
+figS1_dat <- dplyr::bind_rows(
+  unadj_both %>%
+    dplyr::transmute(year, marg_pct, lcl_pct, ucl_pct, denom,
+                     estimate_type = "Unadjusted (age-standardized)"),
+  marg_both %>%
+    dplyr::transmute(year, marg_pct,
+                     lcl_pct = NA_real_, ucl_pct = NA_real_,
+                     denom,
+                     estimate_type = "Adjusted (G-computation)")
+)
+
+pal_est  <- c("Unadjusted (age-standardized)" = "grey50",
+              "Adjusted (G-computation)"       = "#2166AC")
+lty_est  <- c("Unadjusted (age-standardized)" = "dotted",
+              "Adjusted (G-computation)"       = "solid")
+
+figS1 <- ggplot(figS1_dat,
+                aes(x = year, y = marg_pct,
+                    color = estimate_type, linetype = estimate_type)) +
+  covid_band + covid_lbl +
+  geom_ribbon(
+    data = dplyr::filter(figS1_dat, estimate_type == "Unadjusted (age-standardized)"),
+    aes(ymin = lcl_pct, ymax = ucl_pct, fill = estimate_type),
+    alpha = 0.30, color = NA
+  ) +
+  geom_line(linewidth = 1.0) +
+  geom_point(
+    data = dplyr::filter(figS1_dat, estimate_type == "Adjusted (G-computation)"),
+    size = 2.1
+  ) +
+  scale_color_manual(values = pal_est, name = "Estimate type") +
+  scale_fill_manual( values = pal_est, name = "Estimate type") +
+  scale_linetype_manual(values = lty_est, name = "Estimate type") +
+  scale_x_continuous(breaks = c(2011, 2014, 2017, 2020, 2024),
+                     expand = expansion(mult = c(0.01, 0.05))) +
+  scale_y_continuous(labels = label_number(suffix = "%", accuracy = 1),
+                     name   = "Binge drinking prevalence (%)") +
+  facet_wrap(~ denom, scales = "free_y", ncol = 2) +
+  labs(
+    x       = NULL,
+    caption = "Source: BRFSS LLCP 2011–2024."
+  ) +
+  theme_ms() +
+  theme(legend.position = "bottom") +
+  guides(
+    color    = guide_legend(title = "Estimate type", order = 1,
+                            override.aes = list(linewidth = 1.2)),
+    linetype = guide_legend(title = "Estimate type", order = 1),
+    fill     = "none"
+  )
+
+save_fig(figS1, "figS1_adjusted_vs_unadjusted_marginal", w = 10, h = 5.5)
+
+
+# ===========================================================================
+# PT1) PUBLICATION TABLE 1 — Weighted sample characteristics
+#      Pooled 2011–2024; columns: % of sample; binge drinking prevalence
+# ===========================================================================
+
+# Format: variable | level | N (unweighted) | % of sample | Binge prev (95% CI)
+format_table1 <- function(tab_csv, denom_label) {
+  var_order <- c("sex_f", "age_group", "race6_nat", "educ4",
+                 "income6", "employ3", "marital3", "insured")
+  var_labels <- c(
+    sex_f      = "Sex",
+    age_group  = "Age group",
+    race6_nat  = "Race/ethnicity",
+    educ4      = "Education",
+    income6    = "Household income",
+    employ3    = "Employment status",
+    marital3   = "Marital status",
+    insured    = "Health insurance"
+  )
+
+  tab_csv %>%
+    dplyr::filter(variable %in% var_order) %>%
+    dplyr::mutate(
+      variable = factor(variable, levels = var_order),
+      var_label = dplyr::recode(variable, !!!var_labels),
+      # Normalize non-ASCII characters so CSV opens correctly in Excel/Word
+      level         = gsub("–", "-", gsub("≥", ">=", level)),
+      prev_binge_ci = gsub("–", "-", prev_binge_ci)
+    ) %>%
+    dplyr::arrange(variable) %>%
+    dplyr::transmute(
+      Characteristic  = paste0("  ", level),
+      `N (unweighted)` = format(n_unw, big.mark = ","),
+      `Weighted % of sample` = sprintf("%.1f%%", pct_sample),
+      `Binge drinking prevalence (95% CI)` = prev_binge_ci,
+      .domain = as.character(var_label)
+    ) %>%
+    dplyr::group_by(.domain) %>%
+    dplyr::group_modify(~ dplyr::add_row(.x,
+      Characteristic  = unique(.y$.domain),
+      `N (unweighted)` = "",
+      `Weighted % of sample` = "",
+      `Binge drinking prevalence (95% CI)` = "",
+      .before = 1
+    )) %>%
+    dplyr::ungroup() %>%
+    dplyr::select(-.domain)
+}
+
+table1_all_fmt  <- format_table1(tab1_all_csv,  "All adults")
+table1_curr_fmt <- format_table1(tab1_curr_csv, "Current drinkers")
+
+# Use bind_cols rather than join: both tables have identical row structure
+# (same variable order, same levels) so positional binding is safe and avoids
+# the many-to-many match on repeated level names like "Unknown".
+stopifnot(nrow(table1_all_fmt) == nrow(table1_curr_fmt))
+table1_combined <- dplyr::bind_cols(
+  table1_all_fmt %>%
+    dplyr::rename_with(~ paste0(.x, " (All adults)"), -Characteristic),
+  table1_curr_fmt %>%
+    dplyr::select(-Characteristic) %>%
+    dplyr::rename_with(~ paste0(.x, " (Current drinkers)"))
+)
+
+readr::write_csv(
+  table1_combined,
+  file.path(tab_dir, "pub_Table1_weighted_characteristics.csv"),
+  na = ""
+)
+message("Publication Table 1 written")
+
+
+# ===========================================================================
+# PT2) PUBLICATION TABLE 2 — Primary regression model results
+#      Annual trend PR with 95% CI and p-value; both denominators
+# ===========================================================================
+
+pr_all_raw  <- readr::read_csv(
+  file.path(tab_dir, "adj_PR_alladults_linetime_regionFE.csv"),
+  show_col_types = FALSE
+) %>% dplyr::mutate(denom = "All adults")
+
+pr_curr_raw <- readr::read_csv(
+  file.path(tab_dir, "adj_PR_currentdrinkers_linetime_regionFE.csv"),
+  show_col_types = FALSE
+) %>% dplyr::mutate(denom = "Current drinkers")
+
+pr_all_covid_raw  <- readr::read_csv(
+  file.path(tab_dir, "adj_PR_alladults_linetime_covidSens_regionFE.csv"),
+  show_col_types = FALSE
+) %>% dplyr::mutate(denom = "All adults (COVID-adjusted)")
+
+pr_curr_covid_raw <- readr::read_csv(
+  file.path(tab_dir, "adj_PR_currentdrinkers_linetime_covidSens_regionFE.csv"),
+  show_col_types = FALSE
+) %>% dplyr::mutate(denom = "Current drinkers (COVID-adjusted)")
+
+format_pr_table <- function(pr_dat) {
+  # Normalize non-ASCII chars in term names for reliable string matching
+  pr_dat <- pr_dat %>%
+    dplyr::mutate(term = gsub("–", "-", gsub("≥", ">=", term)))
+
+  term_labels <- c(
+    # Primary exposure
+    "year_lin"                        = "Annual trend (per year)",
+    "covid"                           = "COVID-19 period (2020-2024)",
+    # Demographics
+    "sex_fMale"                       = "Male vs. Female",
+    # Age (reference: 18-24)
+    "age_group25-29"                  = "Age 25-29 years (vs. 18-24)",
+    "age_group30-34"                  = "Age 30-34 years (vs. 18-24)",
+    "age_group35-39"                  = "Age 35-39 years (vs. 18-24)",
+    "age_group40-44"                  = "Age 40-44 years (vs. 18-24)",
+    "age_group45-49"                  = "Age 45-49 years (vs. 18-24)",
+    "age_group50-54"                  = "Age 50-54 years (vs. 18-24)",
+    "age_group55-59"                  = "Age 55-59 years (vs. 18-24)",
+    "age_group60-64"                  = "Age 60-64 years (vs. 18-24)",
+    "age_group65+"                    = "Age 65+ years (vs. 18-24)",
+    # Race/ethnicity (reference: NH White)
+    "race6_natNH Black"               = "NH Black (vs. NH White)",
+    "race6_natHispanic"               = "Hispanic (vs. NH White)",
+    "race6_natNH Asian/NHPI"          = "NH Asian/NHPI (vs. NH White)",
+    "race6_natNH AI/AN"               = "NH AI/AN (vs. NH White)",
+    "race6_natNH Other/Multiracial"   = "NH Other/Multiracial (vs. NH White)",
+    # Education (reference: <HS)
+    "educ4HS/GED"                     = "HS/GED (vs. <HS)",
+    "educ4Some college/AA"            = "Some college/AA (vs. <HS)",
+    "educ4College"                    = "College graduate (vs. <HS)",
+    # Household income (reference: <$15,000)
+    "income6$15-<25k"                 = "$15,000-<$25,000 (vs. <$15,000)",
+    "income6$25-<35k"                 = "$25,000-<$35,000 (vs. <$15,000)",
+    "income6$35-<50k"                 = "$35,000-<$50,000 (vs. <$15,000)",
+    "income6$50-<75k"                 = "$50,000-<$75,000 (vs. <$15,000)",
+    "income6>=$75k"                  = ">=$75,000 (vs. <$15,000)",
+    "income6Unknown"                  = "Income unknown (vs. <$15,000)",
+    # Employment (reference: Employed)
+    "employ3Unemployed"               = "Unemployed (vs. Employed)",
+    "employ3NILF"                     = "Not in labor force (vs. Employed)",
+    "employ3Unknown"                  = "Employment unknown (vs. Employed)",
+    # Marital status (reference: Married/Partnered)
+    "marital3Never married"           = "Never married (vs. Married/Partnered)",
+    "marital3Previously married"      = "Previously married (vs. Married/Partnered)",
+    "marital3Unknown"                 = "Marital status unknown (vs. Married/Partnered)",
+    # Health insurance (reference: Insured)
+    "insuredNo"                       = "Uninsured (vs. Insured)",
+    "insuredUnknown"                  = "Insurance status unknown (vs. Insured)"
+  )
+
+  pr_dat %>%
+    # Drop intercept and region fixed effects (nuisance parameters)
+    dplyr::filter(!grepl("^\\(Intercept\\)|^factor\\(region\\)", term)) %>%
+    dplyr::transmute(
+      Denominator = denom,
+      Term        = dplyr::recode(term, !!!term_labels, .default = term),
+      `PR`        = sprintf("%.3f", PR),
+      `95% CI`    = sprintf("%.3f-%.3f", LCL, UCL),
+      `p-value`   = dplyr::case_when(
+        p < 0.001 ~ "<0.001",
+        TRUE      ~ sprintf("%.3f", p)
+      )
+    )
+}
+
+table2 <- dplyr::bind_rows(
+  format_pr_table(pr_all_raw),
+  format_pr_table(pr_curr_raw),
+  format_pr_table(pr_all_covid_raw),
+  format_pr_table(pr_curr_covid_raw)
+)
+
+readr::write_csv(
+  table2,
+  file.path(tab_dir, "pub_Table2_primary_regression_PR.csv")
+)
+message("Publication Table 2 written")
+
+readr::write_csv(
+  dplyr::filter(table2, Denominator %in% c("All adults", "Current drinkers")),
+  file.path(tab_dir, "pub_Table2_primary_regression_PR_main.csv")
+)
+message("Publication Table 2 (main models) written")
+
+readr::write_csv(
+  dplyr::filter(table2, Denominator %in% c("All adults (COVID-adjusted)",
+                                           "Current drinkers (COVID-adjusted)")),
+  file.path(tab_dir, "pub_TableS3_sensitivity_covid_adjusted.csv")
+)
+message("Supplementary Table S3 (COVID sensitivity) written")
+
+
+# ===========================================================================
+# PT3) SUPPLEMENTARY TABLE — Subgroup-specific annual PRs (all interactions)
+# ===========================================================================
+
+table3 <- dplyr::bind_rows(
+  readr::read_csv(
+    file.path(tab_dir, "adj_PR_currentdrinkers_TrendByAge_annualPR.csv"),
+    show_col_types = FALSE
+  ) %>%
+    dplyr::transmute(
+      Domain      = "Age group",
+      Subgroup    = gsub("–", "-", age_group),
+      PR_per_year, LCL, UCL, p
+    ),
+  readr::read_csv(
+    file.path(tab_dir, "adj_PR_currentdrinkers_TrendBySex_annualPR.csv"),
+    show_col_types = FALSE
+  ) %>%
+    dplyr::transmute(
+      Domain   = "Sex",
+      Subgroup = stratum,
+      PR_per_year, LCL, UCL, p
+    ),
+  readr::read_csv(
+    file.path(tab_dir, "adj_PR_currentdrinkers_TrendByRace_annualPR.csv"),
+    show_col_types = FALSE
+  ) %>%
+    dplyr::transmute(
+      Domain   = "Race/ethnicity",
+      Subgroup = race6_nat,
+      PR_per_year, LCL, UCL, p
+    ),
+  readr::read_csv(
+    file.path(tab_dir, "adj_PR_currentdrinkers_TrendByIncome_annualPR.csv"),
+    show_col_types = FALSE
+  ) %>%
+    dplyr::filter(!is.na(PR_per_year)) %>%
+    dplyr::transmute(
+      Domain   = "Household income",
+      # Match on ASCII-safe numeric prefix; the en-dash/≥ bytes are garbled
+      Subgroup = dplyr::case_when(
+        startsWith(income6, "<")   ~ "<$15,000",
+        startsWith(income6, "$15") ~ "$15,000-<$25,000",
+        startsWith(income6, "$25") ~ "$25,000-<$35,000",
+        startsWith(income6, "$35") ~ "$35,000-<$50,000",
+        startsWith(income6, "$50") ~ "$50,000-<$75,000",
+        income6 == "Unknown"       ~ "Unknown",
+        TRUE                       ~ ">=$75,000"  # only >=75k remains
+      ),
+      PR_per_year, LCL, UCL, p
+    )
+) %>%
+  dplyr::group_by(Domain) %>%
+  dplyr::mutate(p_adj_bh = p.adjust(p, method = "BH")) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(
+    `PR (95% CI)` = sprintf("%.3f (%.3f-%.3f)", PR_per_year, LCL, UCL),
+    `p-value (raw)` = dplyr::case_when(
+      p < 0.001 ~ "<0.001",
+      TRUE      ~ sprintf("%.3f", p)
+    ),
+    `p-value (BH)` = dplyr::case_when(
+      p_adj_bh < 0.001 ~ "<0.001",
+      TRUE             ~ sprintf("%.3f", p_adj_bh)
+    )
+  ) %>%
+  dplyr::select(Domain, Subgroup, `PR (95% CI)`, `p-value (raw)`, `p-value (BH)`)
+
+readr::write_csv(
+  table3,
+  file.path(tab_dir, "pub_TableS1_subgroup_annual_PRs.csv")
+)
+message("Supplementary Table S1 written")
+
+
+# ===========================================================================
+# PT4) SUPPLEMENTARY TABLE S2 — State-level annual trends
+# ===========================================================================
+
+state_trend_curr_full <- readr::read_csv(
+  file.path(tab_dir, "main_state_trends_current_AGEADJ2000_PR.csv"),
+  show_col_types = FALSE
+) %>%
+  dplyr::filter(!is.na(PR_per_year)) %>%
+  dplyr::transmute(
+    State            = state_name,
+    Abbreviation     = state_abbr,
+    `n years used`   = n_years_used,
+    `Annual PR`      = sprintf("%.3f", PR_per_year),
+    `95% CI`         = sprintf("%.3f-%.3f", PR_lcl, PR_ucl),
+    `p-value (raw)`  = sprintf("%.3f", p_two),
+    `p-value (BH)`   = sprintf("%.3f", p_adj_bh),
+    `Significant (BH-corrected)` = dplyr::if_else(p_adj_bh < 0.05, "Yes", "No")
+  ) %>%
+  dplyr::arrange(`Annual PR`)
+
+readr::write_csv(
+  state_trend_curr_full,
+  file.path(tab_dir, "pub_TableS2_state_level_trends.csv")
+)
+message("Supplementary Table S2 written")
+
+# ===========================================================================
+# PX1) SUPPLEMENTARY TABLE — Sex × Age10 marginal prevalence (G-computation)
+# ===========================================================================
+
+sexage10_raw <- readr::read_csv(
+  file.path(tab_dir, "adj_marginal_prev_SexByAge10_gcomp.csv"),
+  show_col_types = FALSE
+)
+
+pub_sexage10 <- sexage10_raw %>%
+  dplyr::transmute(
+    `Age group`              = age_group,
+    `Female prevalence (%)`  = sprintf("%.1f", Female),
+    `Male prevalence (%)`    = sprintf("%.1f", Male),
+    `Male-to-female PR`      = sprintf("%.2f", PR_male_vs_female),
+    `Difference (pp)`        = sprintf("%.1f", diff_pp)
+  )
+
+readr::write_csv(
+  pub_sexage10,
+  file.path(tab_dir, "pub_TableSX_marginal_prev_SexByAge10.csv")
+)
+message("Supplementary Table SX (Sex x Age marginal prevalence) written")
+
+
+# ===========================================================================
+# PX2) SUPPLEMENTARY TABLE — All model diagnostics (Pearson phi)
+# ===========================================================================
+
+pub_diag <- readr::read_csv(
+  file.path(tab_dir, "model_diagnostics_phi.csv"),
+  show_col_types = FALSE
+) %>%
+  dplyr::mutate(family = "Quasi-Poisson (log link)") %>%
+  dplyr::transmute(
+    `Model`       = model,
+    `Residual df` = df_resid,
+    `Pearson phi` = sprintf("%.3f", phi_pearson),
+    `Family`      = family
+  )
+
+readr::write_csv(
+  pub_diag,
+  file.path(tab_dir, "pub_TableS_model_diagnostics.csv")
+)
+message("Supplementary model diagnostics table written")
+
+
+# ===========================================================================
+# PX3) SUPPLEMENTARY FIGURE S2 — Binge frequency per drinking day, 2011-2024
+# ===========================================================================
+
+# Survey-weighted ratio of means: sum(w*binge_episodes) / sum(w*drink_days) per year.
+# Mathematically identical to svyratio()'s point estimate but skips the Taylor-linearization
+# variance machinery, which is prohibitively slow on the pooled 14-year design.
+# CIs are intentionally omitted from figS2; the annual RR comes from the offset model below.
+freq_by_year <- purrr::map_dfr(2011:2024, function(yr) {
+  des_yr <- subset(des_curr_freq, year == yr)
+  d <- des_yr$variables
+  w <- weights(des_yr)
+  ok <- !is.na(d$binge_episodes) & !is.na(d$drink_days)
+  tibble::tibble(
+    year      = yr,
+    freq_rate = sum(w[ok] * d$binge_episodes[ok]) / sum(w[ok] * d$drink_days[ok])
+  )
+})
+
+# Annual RR from the offset model
+freq_rr_yr <- readr::read_csv(
+  file.path(tab_dir, "adj_RR_currentdrinkers_bingeFrequency_perDrinkDay.csv"),
+  show_col_types = FALSE
+) %>%
+  dplyr::filter(term == "year_lin")
+
+freq_subtitle <- sprintf(
+  "Adjusted annual RR = %.3f (95%% CI: %.3f-%.3f), p %s",
+  freq_rr_yr$PR, freq_rr_yr$LCL, freq_rr_yr$UCL,
+  dplyr::if_else(freq_rr_yr$p < 0.001, "< 0.001", sprintf("= %.3f", freq_rr_yr$p))
+)
+
+figS2 <- ggplot(freq_by_year, aes(x = year, y = freq_rate)) +
+  covid_band + covid_lbl +
+  geom_line(color = "#2166AC", linewidth = 1.1) +
+  geom_point(color = "#2166AC", size = 2.8) +
+  scale_x_continuous(breaks = 2011:2024) +
+  scale_y_continuous(
+    name   = "Binge drinking occasions per drinking day (ratio of means)",
+    labels = label_number(accuracy = 0.001)
+  ) +
+  labs(
+    x       = NULL,
+    caption = "Source: BRFSS LLCP 2011–2024."
+  ) +
+  theme_ms()
+
+save_fig(figS2, "figS2_binge_frequency_trend", w = 9, h = 5.5)
+
+
+# ===========================================================================
+# PX4) SUPPLEMENTARY FIGURE S3 — Income-stratified binge drinking trends
+# ===========================================================================
+
+inc_lvl_clean <- c("<$15,000", "$15,000-<$25,000", "$25,000-<$35,000",
+                   "$35,000-<$50,000", "$50,000-<$75,000", ">=$75,000")
+
+pal_income_fig <- c(
+  "<$15,000"          = "#D73027",
+  "$15,000-<$25,000"  = "#FC8D59",
+  "$25,000-<$35,000"  = "#FDAE61",
+  "$35,000-<$50,000"  = "#91BFDB",
+  "$50,000-<$75,000"  = "#4575B4",
+  ">=$75,000"         = "#313695"
+)
+
+# Normalize garbled/Unicode income6 labels to clean ASCII for both datasets.
+# startsWith() is byte-safe; the ASCII prefix ($15, $25 etc.) is always intact.
+clean_income6 <- function(x) {
+  dplyr::case_when(
+    startsWith(as.character(x), "<")   ~ "<$15,000",
+    startsWith(as.character(x), "$15") ~ "$15,000-<$25,000",
+    startsWith(as.character(x), "$25") ~ "$25,000-<$35,000",
+    startsWith(as.character(x), "$35") ~ "$35,000-<$50,000",
+    startsWith(as.character(x), "$50") ~ "$50,000-<$75,000",
+    as.character(x) == "Unknown"       ~ "Unknown",
+    TRUE                               ~ ">=$75,000"
+  )
+}
+
+# Survey-weighted prevalence by income × year — fast weighted.mean loop,
+# no variance needed (CIs omitted from figure for visual clarity).
+inc_year_raw <- purrr::map_dfr(2011:2024, function(yr) {
+  des_yr <- subset(des_curr, year == yr)
+  df_yr  <- des_yr$variables
+  wts    <- weights(des_yr)
+  df_yr %>%
+    dplyr::group_by(income6) %>%
+    dplyr::summarise(
+      est_pct = weighted.mean(any_binge_cdc,
+                              wts[dplyr::cur_group_rows()],
+                              na.rm = TRUE) * 100,
+      .groups = "drop"
+    ) %>%
+    dplyr::mutate(year = yr)
+}) %>%
+  dplyr::mutate(
+    income6_clean = factor(clean_income6(income6),
+                           levels = c(inc_lvl_clean, "Unknown"))
+  ) %>%
+  dplyr::filter(income6_clean != "Unknown")
+
+# Income-specific annual PRs with clean labels and significance flags
+inc_pr <- readr::read_csv(
+  file.path(tab_dir, "adj_PR_currentdrinkers_TrendByIncome_annualPR.csv"),
+  show_col_types = FALSE
+) %>%
+  dplyr::filter(!is.na(PR_per_year)) %>%
+  dplyr::mutate(
+    income6_clean = factor(clean_income6(income6), levels = inc_lvl_clean),
+    sig           = dplyr::if_else(p < 0.05, "*", ""),
+    pr_lab        = sprintf("PR = %.3f%s", PR_per_year, sig)
+  ) %>%
+  dplyr::filter(!is.na(income6_clean))
+
+# Right-endpoint annotation data (2024 prevalence + PR label)
+inc_annot <- inc_year_raw %>%
+  dplyr::filter(year == 2024) %>%
+  dplyr::left_join(
+    inc_pr %>% dplyr::select(income6_clean, pr_lab),
+    by = "income6_clean"
+  )
+
+figS3 <- ggplot(inc_year_raw,
+                aes(x = year, y = est_pct,
+                    color = income6_clean, fill = income6_clean,
+                    group = income6_clean)) +
+  covid_band +
+  geom_line(linewidth = 1.0) +
+  geom_point(size = 1.8) +
+  ggrepel::geom_text_repel(
+    data = inc_annot,
+    aes(label = pr_lab),
+    hjust = 0,
+    nudge_x = 0.5,
+    direction = "y",
+    size = 2.7,
+    segment.size = 0.2,
+    show.legend = FALSE
+  ) +
+  scale_color_manual(values = pal_income_fig, name = "Household income") +
+  scale_fill_manual( values = pal_income_fig, name = "Household income") +
+  scale_x_continuous(breaks = c(2011, 2014, 2017, 2020, 2024),
+                     expand = expansion(mult = c(0.02, 0.28))) +
+  scale_y_continuous(
+    labels = label_number(suffix = "%", accuracy = 1),
+    name   = "Binge drinking prevalence (%)"
+  ) +
+  labs(
+    x       = NULL,
+    caption = "Source: BRFSS LLCP 2011–2024."
+  ) +
+  theme_ms() +
+  theme(legend.position = "right",
+        legend.text = element_text(size = 8.5))
+
+save_fig(figS3, "figS3_income_trends_current_drinkers", w = 9, h = 5.5)
+
+message("\n=== All manuscript figures and tables complete ===")
+message("Figures saved to: ", fig_dir)
+message("Tables  saved to: ", tab_dir)
